@@ -1,12 +1,13 @@
 import sys
+from datetime import datetime
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTableWidget, QTableWidgetItem, QPushButton, QProgressBar, 
     QLabel, QFileDialog, QHeaderView, QLineEdit, QDialog, QFormLayout,
-    QFrame
+    QFrame, QCheckBox, QSystemTrayIcon, QMenu
 )
-from PySide6.QtCore import Qt, QSize, QSettings
-from PySide6.QtGui import QIcon, QColor
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate
+from PySide6.QtGui import QIcon, QColor, QAction
 from .db import init_db, get_targets, update_target_goals, get_target_progress, delete_target, clear_all_data
 from .scanner import scan_directory
 from .organizer import organize_directory
@@ -83,6 +84,15 @@ QProgressBar {
 QProgressBar::chunk {
     background-color: #007acc;
     border-radius: 4px;
+    # ... existing styles ...
+}
+QCheckBox {
+    spacing: 5px;
+    color: #e0e0e0;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
 }
 QScrollBar:vertical {
     border: none;
@@ -182,6 +192,7 @@ class NebulaPilotGUI(QMainWindow):
         
         # Initialize Settings
         self.settings = QSettings("NebulaPilot", "NebulaPilot")
+        self.last_run_date = "" # Track daily run
         
         init_db()
         
@@ -200,6 +211,12 @@ class NebulaPilotGUI(QMainWindow):
         self.title_label.setObjectName("TitleLabel")
         self.header_layout.addWidget(self.title_label)
         self.header_layout.addStretch()
+        
+        # Auto-Organize Checkbox
+        self.auto_cb = QCheckBox("Auto-Organize (Daily 06:00)")
+        self.auto_cb.setChecked(self.settings.value("auto_organize", False, type=bool))
+        self.auto_cb.stateChanged.connect(self.on_auto_cb_changed)
+        self.header_layout.addWidget(self.auto_cb)
         
         # Action Buttons
         self.scan_btn = QPushButton("Scan Directory")
@@ -255,8 +272,104 @@ class NebulaPilotGUI(QMainWindow):
         
         self.layout.addWidget(self.table)
         
-        self.refresh_table()
+        # --- System Tray Setup ---
+        self.tray_icon = QSystemTrayIcon(self)
+        # Use a standard icon or fallback (assuming assets/icon.ico exists or using standard)
+        # For now, let's use the window icon or a standard system icon
+        self.tray_icon.setIcon(self.style().standardIcon(self.style().SP_ComputerIcon)) 
         
+        tray_menu = QMenu()
+        show_action = QAction("Show Main Window", self)
+        show_action.triggered.connect(self.show_normal)
+        tray_menu.addAction(show_action)
+        
+        run_now_action = QAction("Run Organization Now", self)
+        run_now_action.triggered.connect(self.run_auto_organize)
+        tray_menu.addAction(run_now_action)
+        
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.quit_app)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+        
+        # Double click to show
+        self.tray_icon.activated.connect(self.on_tray_activated)
+
+        # --- Scheduler Timer ---
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.check_schedule)
+        self.timer.start(60000) # Check every 60 seconds
+        
+        self.refresh_table()
+
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.show_normal()
+
+    def show_normal(self):
+        self.show()
+        self.setWindowState(Qt.WindowNoState)
+        self.activateWindow()
+
+    def closeEvent(self, event):
+        """Minimize to tray instead of closing."""
+        if self.tray_icon.isVisible():
+            QMessageBox.information(self, "NebulaPilot", 
+                                    "The application will keep running in the system tray to ensure auto-organization works.\n\n"
+                                    "To quit completely, right-click the tray icon and select 'Quit'.")
+            self.hide()
+            self.tray_icon.showMessage(
+                "NebulaPilot",
+                "Running in background. Double-click tray icon to restore.",
+                QSystemTrayIcon.Information,
+                3000
+            )
+            event.ignore()
+        else:
+            event.accept()
+
+    def quit_app(self):
+        QApplication.quit()
+
+    def on_auto_cb_changed(self, state):
+        self.settings.setValue("auto_organize", self.auto_cb.isChecked())
+
+    def check_schedule(self):
+        """Called every minute to check if we should run."""
+        if not self.auto_cb.isChecked():
+            return
+
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        today_str = now.strftime("%Y-%m-%d")
+
+        # Scheduler Trigger: 06:00
+        if current_time == "06:00":
+            if self.last_run_date != today_str:
+                print("Triggering Auto-Schedule...")
+                self.run_auto_organize()
+                self.last_run_date = today_str # Prevent re-run same day
+    
+    def run_auto_organize(self):
+        source_dir = self.settings.value("last_source_dir", "")
+        dest_dir = self.settings.value("last_dest_dir", "")
+        
+        if not source_dir or not dest_dir:
+            self.tray_icon.showMessage("Auto-Organize Failed", "Source or Destination directory not set.", QSystemTrayIcon.Warning)
+            return
+            
+        self.tray_icon.showMessage("NebulaPilot", "Auto-Organizing files...", QSystemTrayIcon.Information)
+        
+        # Run organization
+        try:
+            organize_directory(source_dir, dest_dir)
+            self.refresh_table()
+            self.tray_icon.showMessage("NebulaPilot", "Organization Complete! Database Updated.", QSystemTrayIcon.Information)
+        except Exception as e:
+            self.tray_icon.showMessage("Error", f"Organization failed: {str(e)}", QSystemTrayIcon.Critical)
+
     def refresh_table(self):
         targets = get_targets()
         self.table.setRowCount(len(targets))
@@ -475,11 +588,15 @@ class NebulaPilotGUI(QMainWindow):
 
         if confirm == QMessageBox.Yes:
             organize_directory(source_dir, dest_dir)
-            QMessageBox.information(self, "Success", "File organization complete!")
+            self.refresh_table()
+            QMessageBox.information(self, "Success", "File organization complete! Database updated.")
 
 def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(DARK_THEME) # Apply global dark theme
+    # Ensure tooltips and tray icon visible
+    app.setQuitOnLastWindowClosed(False) # KEEP APP RUNNING for tray
+    
     window = NebulaPilotGUI()
     window.show()
     sys.exit(app.exec())

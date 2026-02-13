@@ -46,12 +46,19 @@ def get_organize_path(metadata, dest_root, source_root, is_good):
     
     return Path(dest_root) / target_name / rel_path
 
+
+from .db import init_db, add_target, add_frame
+
 def organize_directory(source_dir, dest_dir, dry_run=False):
     """
     Move FITS files from source_dir to dest_dir, organized by Target/(SourceStructure).
+    Updates the database with the new location and progress.
     """
     source_path = Path(source_dir)
     dest_path = Path(dest_dir)
+    
+    if not dry_run:
+        init_db()
     
     if not source_path.exists():
         print(f"Source directory {source_dir} does not exist.")
@@ -87,6 +94,14 @@ def organize_directory(source_dir, dest_dir, dry_run=False):
                 dest_file_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(file_path), str(dest_file_path))
                 print(f"Moved {file_path.name} -> {dest_file_path}")
+                
+                # Update DB
+                # 1. Update Path in metadata to new location
+                metadata["path"] = str(dest_file_path)
+                # 2. Ensure target exists
+                add_target(metadata["target_name"])
+                # 3. Add frame record
+                add_frame(metadata)
                 
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
