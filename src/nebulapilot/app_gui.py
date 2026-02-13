@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTableWidget, QTableWidgetItem, QPushButton, QProgressBar, 
     QLabel, QFileDialog, QHeaderView, QLineEdit, QDialog, QFormLayout,
-    QFrame, QCheckBox, QSystemTrayIcon, QMenu
+    QFrame, QCheckBox, QSystemTrayIcon, QMenu, QStyle
 )
 from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate
 from PySide6.QtGui import QIcon, QColor, QAction
@@ -15,6 +15,14 @@ from PySide6.QtWidgets import QMessageBox
 
 # Dark Theme Stylesheet
 DARK_THEME = """
+QMenu {
+    background-color: #2d2d30;
+    color: #e0e0e0;
+    border: 1px solid #3e3e42;
+}
+QMenu::item:selected {
+    background-color: #3e3e42;
+}
 QMainWindow, QDialog {
     background-color: #1e1e1e;
     color: #e0e0e0;
@@ -217,6 +225,12 @@ class NebulaPilotGUI(QMainWindow):
         self.auto_cb.setChecked(self.settings.value("auto_organize", False, type=bool))
         self.auto_cb.stateChanged.connect(self.on_auto_cb_changed)
         self.header_layout.addWidget(self.auto_cb)
+
+        # Show Completed Checkbox
+        self.show_completed_cb = QCheckBox("Show Completed")
+        self.show_completed_cb.setChecked(False) # Default hidden
+        self.show_completed_cb.stateChanged.connect(self.refresh_table)
+        self.header_layout.addWidget(self.show_completed_cb)
         
         # Action Buttons
         self.scan_btn = QPushButton("Scan Directory")
@@ -276,7 +290,7 @@ class NebulaPilotGUI(QMainWindow):
         self.tray_icon = QSystemTrayIcon(self)
         # Use a standard icon or fallback (assuming assets/icon.ico exists or using standard)
         # For now, let's use the window icon or a standard system icon
-        self.tray_icon.setIcon(self.style().standardIcon(self.style().SP_ComputerIcon)) 
+        self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon)) 
         
         tray_menu = QMenu()
         show_action = QAction("Show Main Window", self)
@@ -370,16 +384,17 @@ class NebulaPilotGUI(QMainWindow):
         except Exception as e:
             self.tray_icon.showMessage("Error", f"Organization failed: {str(e)}", QSystemTrayIcon.Critical)
 
+    
     def refresh_table(self):
-        targets = get_targets()
-        self.table.setRowCount(len(targets))
+        all_targets = get_targets()
         
-        for i, target in enumerate(targets):
-            target_data = target
+        # Calculate completion status for sorting
+        target_list = []
+        for target in all_targets:
             name = target["name"]
-            # Db returns row, accessing by index or name. 
-            # We updated db.py to return 7 goal columns.
-            # Handle case where db might return fewer columns if migration didn't happen (though it should have)
+            progress = get_target_progress(name)
+            
+            # Goals
             goals = [
                 int(target["goal_l"]), int(target["goal_r"]), int(target["goal_g"]), int(target["goal_b"]),
                 int(target["goal_s"]) if "goal_s" in target.keys() else 0,
@@ -387,14 +402,45 @@ class NebulaPilotGUI(QMainWindow):
                 int(target["goal_o"]) if "goal_o" in target.keys() else 0
             ]
             
-            progress = get_target_progress(name)
+            # Check Completion
+            g_l, g_r, g_g, g_b, g_s, g_h, g_o = goals
+            is_completed = True
+            if g_l > 0 and progress.get('L', 0) < g_l: is_completed = False
+            if g_r > 0 and progress.get('R', 0) < g_r: is_completed = False
+            if g_g > 0 and progress.get('G', 0) < g_g: is_completed = False
+            if g_b > 0 and progress.get('B', 0) < g_b: is_completed = False
+            if g_s > 0 and progress.get('S', 0) < g_s: is_completed = False
+            if g_h > 0 and progress.get('H', 0) < g_h: is_completed = False
+            if g_o > 0 and progress.get('O', 0) < g_o: is_completed = False
+            
+            target_list.append({
+                'data': target,
+                'progress': progress,
+                'goals': goals,
+                'is_completed': is_completed
+            })
+            
+        # Sort: Completed FIRST, then In-Progress
+        # We sort by is_completed (True=1, False=0), so standard sort puts False first.
+        # We want Completed (True) first, so we reverse sort on boolean or sort by `not is_completed`.
+        # Secondary sort by name for stability.
+        target_list.sort(key=lambda x: (not x['is_completed'], x['data']['name']))
+        
+        self.table.setRowCount(len(target_list))
+        
+        for i, item in enumerate(target_list):
+            target = item['data']
+            name = target['name']
+            progress = item['progress']
+            goals = item['goals']
+            is_completed = item['is_completed']
             
             # Target Name
             name_item = QTableWidgetItem(name)
             name_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(i, 0, name_item)
             
-            # Progress Bars for L, R, G, B, S, H, O
+            # Progress Bars
             filters = ["L", "R", "G", "B", "S", "H", "O"]
             for j, f in enumerate(filters):
                 goal = goals[j]
@@ -442,33 +488,9 @@ class NebulaPilotGUI(QMainWindow):
                 
                 self.table.setCellWidget(i, j + 1, container)
             
-            # Use progress dict from DB or calculate if missing (DB function does it)
-            progress = get_target_progress(name)
+                self.table.setCellWidget(i, j + 1, container)
             
-            # Goals
-            g_l = target_data['goal_l']
-            g_r = target_data['goal_r']
-            g_g = target_data['goal_g']
-            g_b = target_data['goal_b']
-            g_s = target_data['goal_s']
-            g_h = target_data['goal_h']
-            g_o = target_data['goal_o']
-            
-            # Check if COMPLETED
-            # Condition: For every channel, if goal > 0, then progress must be >= goal.
-            is_completed = True
-            
-            # L
-            if g_l > 0 and progress['L'] < g_l: is_completed = False
-            # RGB
-            if g_r > 0 and progress['R'] < g_r: is_completed = False
-            if g_g > 0 and progress['G'] < g_g: is_completed = False
-            if g_b > 0 and progress['B'] < g_b: is_completed = False
-            # SHO
-            if g_s > 0 and progress['S'] < g_s: is_completed = False
-            if g_h > 0 and progress['H'] < g_h: is_completed = False
-            if g_o > 0 and progress['O'] < g_o: is_completed = False
-
+            # Status Logic was pre-calculated
             if is_completed:
                 status_text = "COMPLETED"
                 status_color = "#98c379" # Green
@@ -482,12 +504,36 @@ class NebulaPilotGUI(QMainWindow):
             status_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(i, 8, status_item)
             
+            # Hide row if completed and show_completed is False
+            if is_completed and not self.show_completed_cb.isChecked():
+                self.table.setRowHidden(i, True)
+            else:
+                self.table.setRowHidden(i, False)
+            
             # Actions
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
             action_layout.setContentsMargins(5, 5, 5, 5)
             action_layout.setAlignment(Qt.AlignCenter)
             
+            # Done Button
+            done_btn = QPushButton("Done")
+            done_btn.setCursor(Qt.PointingHandCursor)
+            done_btn.setStyleSheet("""
+                QPushButton {
+                    padding: 4px 10px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    background-color: #388e3c;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #4caf50;
+                }
+            """)
+            done_btn.clicked.connect(lambda checked, n=name: self.on_mark_complete(n))
+            action_layout.addWidget(done_btn)
+
             edit_btn = QPushButton("Edit")
             edit_btn.setCursor(Qt.PointingHandCursor)
             # Smaller button for actions
@@ -519,10 +565,16 @@ class NebulaPilotGUI(QMainWindow):
             delete_btn.clicked.connect(lambda checked, n=name: self.on_delete_target(n))
             action_layout.addWidget(delete_btn)
             
+            
             self.table.setCellWidget(i, 9, action_widget)
             
-        # Adjust row heights
-        self.table.verticalHeader().setDefaultSectionSize(70)
+        # Adjust row heights to fixed value
+        self.table.resizeRowsToContents()
+        if self.table.rowCount() > 0:
+             # Enforce minimum height if resizeToContents makes it too small
+             for row in range(self.table.rowCount()):
+                 if self.table.rowHeight(row) < 70:
+                      self.table.setRowHeight(row, 70)
     
     def on_delete_target(self, name):
         confirm = QMessageBox.question(
@@ -542,6 +594,34 @@ class NebulaPilotGUI(QMainWindow):
             if new_goals:
                 update_target_goals(name, new_goals)
                 self.refresh_table()
+
+    def on_mark_complete(self, name):
+        """Sets goals equal to current progress to mark as complete."""
+        progress = get_target_progress(name)
+        # Construct new goals tuple from current progress
+        # Order: L, R, G, B, S, H, O
+        new_goals = (
+            int(progress.get('L', 0)),
+            int(progress.get('R', 0)),
+            int(progress.get('G', 0)),
+            int(progress.get('B', 0)),
+            int(progress.get('S', 0)),
+            int(progress.get('H', 0)),
+            int(progress.get('O', 0))
+        )
+        
+        confirm = QMessageBox.question(
+            self,
+            "Mark as Complete",
+            f"Mark target '{name}' as complete?\n\nThis will set its goals to match current progress:\n"
+            f"L:{new_goals[0]} R:{new_goals[1]} G:{new_goals[2]} B:{new_goals[3]} "
+            f"S:{new_goals[4]} H:{new_goals[5]} O:{new_goals[6]}",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            update_target_goals(name, new_goals)
+            self.refresh_table()
 
     def on_reset_db(self):
         confirm = QMessageBox.warning(
