@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nebulapilot"
+version = "0.1.0"
+description = "Target-based exposure tracking and WBPP orchestration for astrophotography."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyside6>=6.6",
+  "numpy",
+  "astropy",
+  "typer",
+  "rich",
+]
+
+[project.scripts]
+nebulapilot-cli = "nebulapilot.cli:main"
+nebulapilot-gui = "nebulapilot.app_gui:main"
