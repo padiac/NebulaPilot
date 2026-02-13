@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from .db import init_db, get_targets, update_target_goals, get_target_progress
 from .scanner import scan_directory
+from .organizer import organize_directory
+from PySide6.QtWidgets import QMessageBox
 
 class GoalDialog(QDialog):
     def __init__(self, target_name, goals, parent=None):
@@ -66,6 +68,10 @@ class NebulaPilotGUI(QMainWindow):
         self.scan_btn = QPushButton("Scan Directory")
         self.scan_btn.clicked.connect(self.on_scan_clicked)
         self.header_layout.addWidget(self.scan_btn)
+
+        self.organize_btn = QPushButton("Organize Files")
+        self.organize_btn.clicked.connect(self.on_organize_clicked)
+        self.header_layout.addWidget(self.organize_btn)
         
         self.layout.addLayout(self.header_layout)
         
@@ -134,6 +140,26 @@ class NebulaPilotGUI(QMainWindow):
         if dir_path:
             scan_directory(dir_path)
             self.refresh_table()
+
+    def on_organize_clicked(self):
+        source_dir = QFileDialog.getExistingDirectory(self, "Select Source Directory (Incoming Files)")
+        if not source_dir:
+            return
+
+        dest_dir = QFileDialog.getExistingDirectory(self, "Select Destination Directory (Organized Storage)")
+        if not dest_dir:
+            return
+
+        confirm = QMessageBox.question(
+            self, 
+            "Confirm Organization", 
+            f"Are you sure you want to move files from:\n{source_dir}\n\nTo:\n{dest_dir}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if confirm == QMessageBox.Yes:
+            organize_directory(source_dir, dest_dir)
+            QMessageBox.information(self, "Success", "File organization complete!")
 
 def main():
     app = QApplication(sys.argv)
