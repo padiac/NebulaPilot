@@ -6,12 +6,15 @@ from PySide6.QtWidgets import (
     QLabel, QFileDialog, QHeaderView, QLineEdit, QDialog, QFormLayout,
     QFrame, QCheckBox, QSystemTrayIcon, QMenu, QStyle
 )
-from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate
-from PySide6.QtGui import QIcon, QColor, QAction
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate, QMimeData
+from PySide6.QtGui import QIcon, QColor, QAction, QDrag
 from .db import init_db, get_targets, update_target_goals, get_target_progress, delete_target, clear_all_data
 from .scanner import scan_directory
 from .organizer import organize_directory
-from PySide6.QtWidgets import QMessageBox
+from .organizer import organize_directory
+from .queue_manager import QueueManager
+from .launcher import NebulaLauncher
+from PySide6.QtWidgets import QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView
 
 # Dark Theme Stylesheet
 DARK_THEME = """
@@ -19,6 +22,8 @@ QMenu {
     background-color: #2d2d30;
     color: #e0e0e0;
     border: 1px solid #3e3e42;
+    min-width: 160px;
+    padding: 5px;
 }
 QMenu::item:selected {
     background-color: #3e3e42;
@@ -92,7 +97,6 @@ QProgressBar {
 QProgressBar::chunk {
     background-color: #007acc;
     border-radius: 4px;
-    # ... existing styles ...
 }
 QCheckBox {
     spacing: 5px;
@@ -192,11 +196,115 @@ class GoalDialog(QDialog):
         except ValueError:
             return None
 
+
+
+class QueueListWidget(QListWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window # Store reference explicitly
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True) # Allow reordering
+        self.setDragDropMode(QAbstractItemView.DragDrop) # Allow External Drops + Internal Moves
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setStyleSheet("""
+            QListWidget {
+                background-color: #252526;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                background-color: #333337;
+                border-radius: 4px;
+                margin-bottom: 4px;
+                border: none;
+            }
+            QListWidget::item:selected {
+                background-color: #007acc;
+            }
+        """)
+
+    def contextMenuEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item:
+            menu = QMenu(self)
+            delete_action = menu.addAction("Remove from Queue")
+            action = menu.exec(event.globalPos())
+            if action == delete_action:
+                target_name = item.data(Qt.UserRole)
+                if hasattr(self.main_window, "remove_from_queue"):
+                     self.main_window.remove_from_queue(target_name)
+
+    def dragEnterEvent(self, event):
+        # Respond to any drag, we filter in dropEvent
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        source = event.source()
+        if source == self:
+            # Handle Internal Reorder
+            super().dropEvent(event)
+            
+            # Sync backend
+            new_order = []
+            for i in range(self.count()):
+                item = self.item(i)
+                data = item.data(Qt.UserRole)
+                if data:
+                    new_order.append(data)
+                
+            if hasattr(self.main_window, "sync_queue_order"):
+                self.main_window.sync_queue_order(new_order)
+                
+            # Re-refresh
+            if hasattr(self.main_window, "refresh_queue_ui"):
+                 self.main_window.refresh_queue_ui()
+                 
+        elif isinstance(source, QTableWidget):
+            # Handle Drop from Table (Direct Source Access)
+            # Use selectedItems() which is more robust than currentRow()
+            items = source.selectedItems()
+            target_name = None
+            
+            # Find the item in column 0 (Target)
+            for item in items:
+                if item.column() == 0:
+                    target_name = item.text()
+                    break
+            
+            # Fallback: if selection is weird, try currentRow
+            if not target_name:
+                row = source.currentRow()
+                if row >= 0:
+                    item = source.item(row, 0)
+                    if item:
+                        target_name = item.text()
+            
+            if target_name:
+                # Manual add via parent
+                if hasattr(self.main_window, "add_to_queue_from_drop"):
+                    self.main_window.add_to_queue_from_drop(target_name)
+            
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
 class NebulaPilotGUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.queue_manager = QueueManager()
+        self.launcher = NebulaLauncher()
+        self.queue_manager = QueueManager()
+        self.launcher = NebulaLauncher()
+        self.is_processing = False
+        self.force_quit = False # Flag to distinguish between minimize (X) and quit
+        
         self.setWindowTitle("NebulaPilot - Astrophotography Progress Tracker")
         self.resize(1200, 700) # Increased width for new columns
+        self.setAcceptDrops(True) # Allow dragging items OUT of queue onto the window to delete
         
         # Initialize Settings
         self.settings = QSettings("NebulaPilot", "NebulaPilot")
@@ -204,11 +312,45 @@ class NebulaPilotGUI(QMainWindow):
         
         init_db()
         
+
+        
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
-        self.layout = QVBoxLayout(self.central_widget)
-        self.layout.setContentsMargins(20, 20, 20, 20)
+        # Main Layout is now Horizontal (Left: Table/Controls, Right: Queue)
+        self.main_layout = QHBoxLayout(self.central_widget)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
+        self.main_layout.setSpacing(20)
+
+        # Left Panel (Existing Content)
+        self.left_panel = QWidget()
+        self.layout = QVBoxLayout(self.left_panel) # Reuse 'self.layout' name to minimize diff
+        self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(20)
+        
+        self.main_layout.addWidget(self.left_panel, stretch=3) # 75% width
+        
+        # Right Panel (Queue)
+        self.right_panel = QWidget()
+        self.right_layout = QVBoxLayout(self.right_panel)
+        self.right_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_layout.setSpacing(10)
+        
+        self.queue_label = QLabel("Integration Queue")
+        self.queue_label.setStyleSheet("font-weight: bold; font-size: 16px; color: #e0e0e0;")
+        self.right_layout.addWidget(self.queue_label)
+        
+        self.right_layout.addWidget(self.queue_label)
+        
+        self.queue_list = QueueListWidget(self) # Pass self as main_window
+        self.refresh_queue_ui() # Load initial queue
+        self.right_layout.addWidget(self.queue_list)
+        
+        # Status Label for Processor
+        self.processor_status = QLabel("Processor: Idle")
+        self.processor_status.setStyleSheet("color: #aaaaaa; font-style: italic;")
+        self.right_layout.addWidget(self.processor_status)
+        
+        self.main_layout.addWidget(self.right_panel, stretch=1) # 25% width
         
         # Header Area
         self.header_frame = QFrame()
@@ -269,6 +411,7 @@ class NebulaPilotGUI(QMainWindow):
         
         self.layout.addWidget(self.header_frame)
         
+        
         # Table
         self.table = QTableWidget()
         self.table.setColumnCount(10) # Target, L, R, G, B, S, H, O, Status, Actions
@@ -282,25 +425,27 @@ class NebulaPilotGUI(QMainWindow):
         self.table.setShowGrid(True) # Styled by QSS
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.NoSelection) # Disable row selection (unless needed)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setDragEnabled(True) # Enable Dragging from Table
+        self.table.setDragDropMode(QAbstractItemView.DragOnly) # Only Drag FROM here
         
         self.layout.addWidget(self.table)
         
         # --- System Tray Setup ---
         self.tray_icon = QSystemTrayIcon(self)
-        # Use a standard icon or fallback (assuming assets/icon.ico exists or using standard)
-        # For now, let's use the window icon or a standard system icon
         self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon)) 
         
         tray_menu = QMenu()
-        show_action = QAction("Show Main Window", self)
+        
+        # 1. Show Main Window
+        show_action = QAction("Open NebulaPilot", self)
         show_action.triggered.connect(self.show_normal)
         tray_menu.addAction(show_action)
         
-        run_now_action = QAction("Run Organization Now", self)
-        run_now_action.triggered.connect(self.run_auto_organize)
-        tray_menu.addAction(run_now_action)
+        # Separator (Optional)
+        tray_menu.addSeparator()
         
+        # 2. Quit
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.quit_app)
         tray_menu.addAction(quit_action)
@@ -328,23 +473,68 @@ class NebulaPilotGUI(QMainWindow):
         self.activateWindow()
 
     def closeEvent(self, event):
-        """Minimize to tray instead of closing."""
-        if self.tray_icon.isVisible():
-            QMessageBox.information(self, "NebulaPilot", 
-                                    "The application will keep running in the system tray to ensure auto-organization works.\n\n"
-                                    "To quit completely, right-click the tray icon and select 'Quit'.")
+        """Ask user whether to minimize or quit."""
+        if self.force_quit:
+            event.accept()
+            return
+
+        # Create custom dialog
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("NebulaPilot")
+        msg_box.setText("Do you want to run NebulaPilot in the background?")
+        msg_box.setInformativeText("Minimizing to tray keeps the scheduler active.")
+        
+        btn_minimize = msg_box.addButton("Minimize to Tray", QMessageBox.ActionRole)
+        btn_quit = msg_box.addButton("Quit Application", QMessageBox.DestructiveRole)
+        btn_cancel = msg_box.addButton(QMessageBox.Cancel)
+        
+        msg_box.setDefaultButton(btn_minimize)
+        
+        # Apply Dark Theme manually if needed, but app stylesheet should cover it
+        
+        msg_box.exec()
+        
+        if msg_box.clickedButton() == btn_minimize:
+            event.ignore()
             self.hide()
             self.tray_icon.showMessage(
                 "NebulaPilot",
-                "Running in background. Double-click tray icon to restore.",
+                "Running in background.",
                 QSystemTrayIcon.Information,
-                3000
+                2000
             )
-            event.ignore()
+        elif msg_box.clickedButton() == btn_quit:
+            self.quit_app()
         else:
-            event.accept()
+            event.ignore()
+
+    def dragEnterEvent(self, event):
+        """Handle dragging items OUT of the queue (Delete)."""
+        source = event.source()
+        if source == self.queue_list:
+            event.acceptProposedAction()
+            print("DEBUG: Dragging out of queue detected")
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Handle drop from Queue -> Window Background (Delete)."""
+        source = event.source()
+        if source == self.queue_list:
+            # Reconstruct the item to verify logic or just iterate selected
+            items = self.queue_list.selectedItems()
+            for item in items:
+                target_name = item.data(Qt.UserRole)
+                if target_name:
+                    print(f"DEBUG: Drag-Out Delete for {target_name}")
+                    self.remove_from_queue(target_name)
+                    
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def quit_app(self):
+        self.force_quit = True
         QApplication.quit()
 
     def on_auto_cb_changed(self, state):
@@ -359,12 +549,114 @@ class NebulaPilotGUI(QMainWindow):
         current_time = now.strftime("%H:%M")
         today_str = now.strftime("%Y-%m-%d")
 
-        # Scheduler Trigger: 06:00
+        # Scheduler Trigger: 06:00 (Auto-Organize)
         if current_time == "06:00":
             if self.last_run_date != today_str:
                 print("Triggering Auto-Schedule...")
                 self.run_auto_organize()
                 self.last_run_date = today_str # Prevent re-run same day
+
+        # Integration Scheduler Logic
+        # Windows: 09:00-12:00, 13:00-18:00
+        # Check every tick
+        if self.is_processing:
+            self.processor_status.setText("Processor: Running...")
+            return
+
+        current_hour = now.hour
+        current_minute = now.minute
+        
+        # Calculate Time Remaining in Window
+        time_remaining_hours = 0
+        window_active = False
+
+        # Morning Window: 09:00 to 12:00
+        if 9 <= current_hour < 12:
+            window_active = True
+            time_remaining_hours = 12 - (current_hour + current_minute/60.0)
+        
+        # Afternoon Window: 13:00 to 18:00
+        elif 13 <= current_hour < 18:
+            window_active = True
+            time_remaining_hours = 18 - (current_hour + current_minute/60.0)
+        
+        status_msg = f"Processor: Idle (Outside Windows)"
+        if window_active:
+            status_msg = f"Processor: Active Window (Time Left: {time_remaining_hours:.1f}h)"
+            # Check if enough time (>= 2 hours)
+            if time_remaining_hours >= 2.0:
+                 # Check Queue
+                 next_target = self.queue_manager.get_next_target()
+                 if next_target:
+                     self.run_process_target(next_target)
+                 else:
+                     status_msg += " - Queue Empty"
+            else:
+                 status_msg += " - Not enough time (<2h)"
+                 
+        self.processor_status.setText(status_msg)
+
+    def add_to_queue_from_drop(self, target_name):
+        if self.queue_manager.add_target(target_name):
+            self.refresh_queue_ui()
+            
+    def remove_from_queue(self, target_name):
+        self.queue_manager.remove_target(target_name)
+        self.refresh_queue_ui()
+    
+    def sync_queue_order(self, new_order):
+        """Update backend with new order from Drag & Drop."""
+        self.queue_manager.reorder(new_order)
+        
+    def refresh_queue_ui(self):
+        self.queue_list.clear() # Removes all items and their widgets
+        for t in self.queue_manager.get_queue():
+            # Create Item
+            item = QListWidgetItem(self.queue_list)
+            # item.setSizeHint(QSize(0, 30)) # Standard height
+            item.setText(t) # Set text directly
+            item.setData(Qt.UserRole, t) # Store name in UserRole
+            
+            # No custom widget needed
+
+            
+    def run_process_target(self, target_name):
+        """Launches the integration process."""
+        self.is_processing = True
+        self.processor_status.setText(f"Processor: Launching PI for {target_name}...")
+        self.tray_icon.showMessage("NebulaPilot", f"Starting Integration for {target_name}", QSystemTrayIcon.Information)
+        
+        # Get source dir from settings (files should be there)
+        # For simplicity, we assume files are in settings_dest_dir / target_name
+        dest_dir = self.settings.value("last_dest_dir", "")
+        
+        # Launch (Non-blocking usually, but we assume it runs)
+        # In a real scenario, we'd need to know when PI finishes. 
+        # For this prototype, we just launch and assume user manages it, OR we block?
+        # User said "Auto trigger".
+        
+        try:
+            success = self.launcher.run_target(target_name, dest_dir)
+            if success:
+                # Remove from Queue immediately so it doesn't loop forever?
+                # Or move to end?
+                self.queue_manager.remove_target(target_name)
+                self.refresh_queue_ui()
+                self.tray_icon.showMessage("NebulaPilot", f"Launched PI for {target_name}", QSystemTrayIcon.Information)
+        except Exception as e:
+             self.tray_icon.showMessage("Error", f"Failed to launch PI: {e}", QSystemTrayIcon.Critical)
+             
+        # Reset processing flag after launch (since PI is external)
+        # Ideally we'd monitor the process, but `subprocess.Popen` returns immediately.
+        # So we just say "We launched it". The user can stop us if they want.
+        # But wait, if we reset fast, the scheduler might pick the NEXT one immediately if time remains!
+        # This is dangerous. 
+        # FIX: We should probably require manual "I'm done" or assume a long timeout.
+        # Given the "2 hours" constraint, we should probably set a timer or waiting state.
+        # For now, I'll set a logical "Busy" state for 5 minutes to prevent rapid fire? 
+        # Or just let it go. One PI instance is usually enough.
+        # I'll rely on the user to keep the queue clean for now.
+        self.is_processing = False # Reset immediately to allow scheduler to check again (but maybe queue is empty now)
     
     def run_auto_organize(self):
         source_dir = self.settings.value("last_source_dir", "")

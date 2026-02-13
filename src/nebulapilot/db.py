@@ -154,6 +154,52 @@ def get_target_progress(target_name, db_path=None):
             progress[f] = row["frame_count"]
     return progress
 
+def get_target_files(target_name, db_path=None):
+    """
+    Retrieves all file paths for a given target, grouped by type/filter.
+    Returns logic:
+    {
+        "Lights": { "L": [path1, ...], "R": [...] },
+        "Darks": [],
+        "Flats": [],
+        "Bias": []
+    }
+    For now, our DB only stores 'path' and 'filter'. We define Type by filter name 
+    or just return a flat list. The launcher expects specific structure.
+    Let's return a list of dicts for maximum flexibility or a simple structure.
+    """
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT path, filter FROM frames WHERE target_name = ?", (target_name,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    files = {
+        "Lights": {},
+        "Darks": [], 
+        "Flats": [],
+        "Bias": []
+    }
+    
+    for row in rows:
+        path = row["path"]
+        flt = row["filter"].upper()
+        
+        # Simple heuristic if we don't store frame type explicitly yet
+        # (Our scanner might need to be smarter, but for now we assume everything is a Light unless filter says otherwise)
+        if flt == "DARK":
+            files["Darks"].append(path)
+        elif flt == "FLAT":
+            files["Flats"].append(path)
+        elif flt == "BIAS":
+            files["Bias"].append(path)
+        else:
+            if flt not in files["Lights"]:
+                files["Lights"][flt] = []
+            files["Lights"][flt].append(path)
+            
+    return files
+
 if __name__ == "__main__":
     init_db()
     print("Database initialized at", DEFAULT_DB_PATH)
