@@ -12,6 +12,7 @@ nebulaPilot is an **exposure progress management and automated organization tool
   - **CLI**: Perfect for automated scripts (e.g., Task Scheduler) for periodic silent scans.
 - **Database Support**: Built with a local SQLite backend for lightweight and high-performance storage.
 - **Software-ready Architecture**: Organized structure designed for direct compilation into Windows `.exe` executables.
+- **Batch Header Fixer**: Dedicated tool to batch-correct `OBJECT` headers in FITS files (useful when capture software writes wrong target names).
 
 ---
 
@@ -48,6 +49,13 @@ PYTHONPATH=src python -m nebulapilot.cli status
 
 # Manually trigger a scan
 PYTHONPATH=src python -m nebulapilot.cli scan /path/to/your/fits/folder
+```
+
+### 3. Batch Header Fixer (Utility)
+A standalone tool to batch update the `OBJECT` header of FITS files.
+
+```bash
+python batch_header_fixer.py
 ```
 
 ---
