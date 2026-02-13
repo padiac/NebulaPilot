@@ -4,6 +4,29 @@ from pathlib import Path
 from astropy.io import fits
 from .db import add_frame, add_target, get_targets
 
+def normalize_filter(filter_name):
+    """Normalize filter names to L, R, G, B, S, H, O."""
+    name = filter_name.upper().strip()
+    
+    if name in ["L", "LUM", "LUMINANCE"]:
+        return "L"
+    if name in ["R", "RED"]:
+        return "R"
+    if name in ["G", "GREEN"]:
+        return "G"
+    if name in ["B", "BLUE"]:
+        return "B"
+    
+    # Narrowband
+    if any(x in name for x in ["HA", "H-ALPHA", "H_ALPHA"]):
+        return "H"
+    if any(x in name for x in ["OIII", "O3", "O-III"]):
+        return "O"
+    if any(x in name for x in ["SII", "S2", "S-II"]):
+        return "S"
+        
+    return name
+
 def get_fits_metadata(file_path):
     try:
         with fits.open(file_path) as hdul:
@@ -11,7 +34,9 @@ def get_fits_metadata(file_path):
             
             # Common astronomical FITS keywords
             target = header.get("OBJECT", "Unknown")
-            filter_name = header.get("FILTER", "Unknown")
+            raw_filter = header.get("FILTER", "Unknown")
+            filter_name = normalize_filter(raw_filter)
+            
             exptime = header.get("EXPTIME", header.get("EXPOSURE", 0))
             date_obs = header.get("DATE-OBS", "Unknown")
             

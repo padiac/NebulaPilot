@@ -25,11 +25,24 @@ def init_db(db_path=None):
         goal_r REAL DEFAULT 0,
         goal_g REAL DEFAULT 0,
         goal_b REAL DEFAULT 0,
+        goal_s REAL DEFAULT 0,
+        goal_h REAL DEFAULT 0,
+        goal_o REAL DEFAULT 0,
         status TEXT DEFAULT 'IN_PROGRESS',
         last_wbpp_time TEXT
     )
     """)
     
+    # Migration: Add SHO columns if they don't exist
+    cursor.execute("PRAGMA table_info(targets)")
+    columns = [info[1] for info in cursor.fetchall()]
+    
+    if "goal_s" not in columns:
+        print("Migrating database: Adding SHO columns...")
+        cursor.execute("ALTER TABLE targets ADD COLUMN goal_s REAL DEFAULT 0")
+        cursor.execute("ALTER TABLE targets ADD COLUMN goal_h REAL DEFAULT 0")
+        cursor.execute("ALTER TABLE targets ADD COLUMN goal_o REAL DEFAULT 0")
+
     # Frames table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS frames (
@@ -55,9 +68,15 @@ def add_target(name, goals=None, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     if goals is None:
-        goals = (0, 0, 0, 0)
+        # Default goals: L=80, RGB=60, SHO=100 frames
+        goals = (80, 60, 60, 60, 100, 100, 100)
+    
+    # Ensure tuple has 7 elements
+    if len(goals) < 7:
+        goals = goals + (0,) * (7 - len(goals))
+        
     cursor.execute(
-        "INSERT OR IGNORE INTO targets (name, goal_l, goal_r, goal_g, goal_b) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO targets (name, goal_l, goal_r, goal_g, goal_b, goal_s, goal_h, goal_o) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (name, *goals)
     )
     conn.commit()
@@ -74,10 +93,32 @@ def get_targets(db_path=None):
 def update_target_goals(name, goals, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
+    # Ensure tuple has 7 elements
+    if len(goals) < 7:
+        goals = goals + (0,) * (7 - len(goals))
+        
     cursor.execute(
-        "UPDATE targets SET goal_l=?, goal_r=?, goal_g=?, goal_b=? WHERE name=?",
+        "UPDATE targets SET goal_l=?, goal_r=?, goal_g=?, goal_b=?, goal_s=?, goal_h=?, goal_o=? WHERE name=?",
         (*goals, name)
     )
+    conn.commit()
+    conn.close()
+
+def delete_target(name, db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    # Delete associated frames first
+    cursor.execute("DELETE FROM frames WHERE target_name = ?", (name,))
+    # Delete target
+    cursor.execute("DELETE FROM targets WHERE name = ?", (name,))
+    conn.commit()
+    conn.close()
+
+def clear_all_data(db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM frames")
+    cursor.execute("DELETE FROM targets")
     conn.commit()
     conn.close()
 
@@ -98,7 +139,7 @@ def get_target_progress(target_name, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT filter, SUM(exptime_sec) as total_sec 
+        SELECT filter, COUNT(*) as frame_count 
         FROM frames 
         WHERE target_name = ? AND decision = 'APPROVED'
         GROUP BY filter
@@ -106,11 +147,11 @@ def get_target_progress(target_name, db_path=None):
     rows = cursor.fetchall()
     conn.close()
     
-    progress = {"L": 0, "R": 0, "G": 0, "B": 0}
+    progress = {"L": 0, "R": 0, "G": 0, "B": 0, "S": 0, "H": 0, "O": 0}
     for row in rows:
         f = row["filter"].upper()
         if f in progress:
-            progress[f] = row["total_sec"] / 60.0 # Convert to minutes
+            progress[f] = row["frame_count"]
     return progress
 
 if __name__ == "__main__":
