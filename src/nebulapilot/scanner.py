@@ -27,6 +27,19 @@ def normalize_filter(filter_name):
         
     return name
 
+def normalize_image_type(type_name):
+    """Normalize image type to LIGHT, FLAT, DARK, BIAS."""
+    name = type_name.upper().strip()
+    if any(x in name for x in ["LIGHT", "SUB"]):
+        return "LIGHT"
+    if "FLAT" in name:
+        return "FLAT"
+    if "DARK" in name:
+        return "DARK"
+    if "BIAS" in name:
+        return "BIAS"
+    return "LIGHT" # Default to LIGHT if unknown
+
 def get_fits_metadata(file_path):
     try:
         with fits.open(file_path) as hdul:
@@ -44,6 +57,7 @@ def get_fits_metadata(file_path):
                 "path": str(file_path),
                 "target_name": target,
                 "filter": filter_name,
+                "image_type": normalize_image_type(header.get("IMAGETYP", "LIGHT")),
                 "exptime_sec": float(exptime),
                 "date_obs": date_obs,
                 "fwhm": None, # Future calculation

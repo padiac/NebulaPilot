@@ -16,24 +16,39 @@ def is_frame_good(header):
     #     return False
     return True
 
-def get_organize_path(metadata, dest_root, is_good):
+def get_organize_path(metadata, dest_root, source_root, is_good):
     """
     Determine the destination path for a file based on its metadata.
+    Mirrors the source directory structure under the target folder.
     """
+    file_path = Path(metadata["path"])
+    
     if not is_good:
-        # Failed frames go to simplified structure
-        date_folder = metadata.get("date_obs", "unknown_date").split("T")[0]
-        return Path(dest_root) / "failed" / date_folder / Path(metadata["path"]).name
+        # Failed frames go to simplified structure or mirror structure in a failed folder
+        # For consistency, let's keep failed logic simple or mirror it too?
+        # Let's mirror it under 'failed'
+        try:
+            rel_path = file_path.relative_to(source_root)
+        except ValueError:
+            # Fallback if not relative (shouldn't happen if organized correct)
+            rel_path = file_path.name
+            
+        return Path(dest_root) / "failed" / rel_path
     
-    # Good frames go to Target / Date structure
-    target_name = metadata.get("target_name", "Unknown").replace(" ", "_")
-    date_folder = metadata.get("date_obs", "unknown_date").split("T")[0]
+    # Good frames: Target / RelPath
+    target_name = metadata.get("target_name", "Unknown").replace(" ", "_").replace("/", "-")
     
-    return Path(dest_root) / target_name / date_folder / Path(metadata["path"]).name
+    try:
+        rel_path = file_path.relative_to(source_root)
+    except ValueError:
+         # Fallback
+        rel_path = file_path.name
+    
+    return Path(dest_root) / target_name / rel_path
 
 def organize_directory(source_dir, dest_dir, dry_run=False):
     """
-    Move FITS files from source_dir to dest_dir, organized by Target/Date.
+    Move FITS files from source_dir to dest_dir, organized by Target/(SourceStructure).
     """
     source_path = Path(source_dir)
     dest_path = Path(dest_dir)
@@ -64,7 +79,7 @@ def organize_directory(source_dir, dest_dir, dry_run=False):
                 header = hdul[0].header
                 is_good = is_frame_good(header)
                 
-            dest_file_path = get_organize_path(metadata, dest_dir, is_good)
+            dest_file_path = get_organize_path(metadata, dest_dir, source_dir, is_good)
             
             if dry_run:
                 print(f"[DRY RUN] Would move {file_path.name} -> {dest_file_path}")
