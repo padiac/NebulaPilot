@@ -1,4 +1,5 @@
 import sys
+import os
 from datetime import datetime
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -433,9 +434,17 @@ class NebulaPilotGUI(QMainWindow):
         self.queue_manager = QueueManager()
         self.launcher = NebulaLauncher()
         self.is_processing = False
+        self.current_process = None # Track subprocess
+        self.current_temp_files = [] # Track files to cleanup
+        self.current_target_name = None # Track name of running target
         self.force_quit = False # Flag to distinguish between minimize (X) and quit
         
         self.setWindowTitle("NebulaPilot - Astrophotography Progress Tracker")
+        
+        # Debounce timer for auto-start (5 seconds)
+        self.start_delay_timer = QTimer(self)
+        self.start_delay_timer.setSingleShot(True)
+        self.start_delay_timer.timeout.connect(self.check_schedule)
         self.resize(1200, 700) # Increased width for new columns
         self.setAcceptDrops(True) # Allow dragging items OUT of queue onto the window to delete
         
@@ -460,7 +469,7 @@ class NebulaPilotGUI(QMainWindow):
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(20)
         
-        self.main_layout.addWidget(self.left_panel, stretch=3) # 75% width
+        self.main_layout.addWidget(self.left_panel, stretch=5) # ~83% width
         
         # Right Panel (Queue)
         self.right_panel = QWidget()
@@ -499,7 +508,7 @@ class NebulaPilotGUI(QMainWindow):
         
         self.right_layout.addLayout(self.queue_controls_layout)
         
-        self.main_layout.addWidget(self.right_panel, stretch=1) # 25% width
+        self.main_layout.addWidget(self.right_panel, stretch=1) # ~17% width
         
         # Header Area
         self.header_frame = QFrame()
@@ -572,6 +581,8 @@ class NebulaPilotGUI(QMainWindow):
         
         # Table Styling Properties
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.Fixed)
+        self.table.setColumnWidth(9, 220) # Ensure Action buttons are not truncated
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True) # Styled by QSS
         self.table.setAlternatingRowColors(True)
@@ -612,6 +623,9 @@ class NebulaPilotGUI(QMainWindow):
         self.timer.timeout.connect(self.check_schedule)
         self.timer.start(60000) # Check every 60 seconds
         
+        # Initial check immediately
+        QTimer.singleShot(1000, self.check_schedule)
+
         self.refresh_table()
 
     def on_tray_activated(self, reason):
@@ -690,6 +704,11 @@ class NebulaPilotGUI(QMainWindow):
 
     def on_auto_cb_changed(self, state):
         self.settings.setValue("auto_organize", self.auto_cb.isChecked())
+        # Check schedule immediately when toggled to give instant feedback
+        if self.auto_cb.isChecked():
+             self.check_schedule()
+        else:
+             self.processor_status.setText("Processor: Idle (Auto-Organize Disabled)")
 
     def check_schedule(self):
         """Called every minute to check if we should run."""
@@ -708,9 +727,39 @@ class NebulaPilotGUI(QMainWindow):
         # Integration Scheduler Logic (always active)
         # Windows: 09:00-12:00, 13:00-18:00
         # Check every tick
+        
+        # 1. Check if processing is actually running
         if self.is_processing:
-            self.processor_status.setText("Processor: Running...")
-            return
+            if self.current_process:
+                ret = self.current_process.poll()
+                if ret is None:
+                    # Still running
+                    self.processor_status.setText(f"Processor: Running {self.current_target_name or 'Task'}... (PID: {self.current_process.pid})")
+                    return
+                else:
+                    # Finished
+                    print(f"Process finished with return code {ret}")
+                    
+                    # Cleanup temporary files
+                    if self.current_temp_files:
+                        print(f"Cleaning up {len(self.current_temp_files)} temp files...")
+                        for f in self.current_temp_files:
+                            try:
+                                if os.path.exists(f):
+                                    os.remove(f)
+                                    print(f"Deleted: {f}")
+                            except Exception as e:
+                                print(f"Failed to delete {f}: {e}")
+                        self.current_temp_files = []
+
+                    self.tray_icon.showMessage("NebulaPilot", f"Integration finished for {self.current_target_name}", QSystemTrayIcon.Information)
+                    self.is_processing = False
+                    self.current_process = None
+                    self.current_target_name = None
+                    # Fall through to pick next task immediately?
+            else:
+                # Flag says processing but no process tracking? Maybe lingering state. Reset.
+                self.is_processing = False
 
         current_hour = now.hour
         current_minute = now.minute
@@ -770,6 +819,8 @@ class NebulaPilotGUI(QMainWindow):
     def add_to_queue_from_drop(self, target_name):
         if self.queue_manager.add_target(target_name):
             self.refresh_queue_ui()
+            # Debounce check to allow multiple drops
+            self.start_delay_timer.start(2000)
             
     def remove_from_queue(self, target_name):
         self.queue_manager.remove_target(target_name)
@@ -778,6 +829,9 @@ class NebulaPilotGUI(QMainWindow):
     def sync_queue_order(self, new_order):
         """Update backend with new order from Drag & Drop."""
         self.queue_manager.reorder(new_order)
+        # Check schedule after reorder, but with delay to allow settling
+        self.processor_status.setText(f"Processor: Updating schedule in 2s...")
+        self.start_delay_timer.start(2000)
         
     def refresh_queue_ui(self):
         self.queue_list.clear() # Removes all items and their widgets
@@ -825,30 +879,20 @@ class NebulaPilotGUI(QMainWindow):
             self.launcher.pi_path = pi_path 
             self.launcher.log(f"App requesting launch for {target_name} with PI Path: {pi_path}")
             
-            success = self.launcher.run_target(target_name, dest_dir, cal_files)
-            if success:
-
-
-
-                # Remove from Queue immediately so it doesn't loop forever?
-                # Or move to end?
+            proc, temp_files = self.launcher.run_target(target_name, dest_dir, cal_files)
+            if proc:
+                self.current_process = proc
+                self.current_temp_files = temp_files
+                self.current_target_name = target_name
+                # Remove from Queue immediately so it isn't picked again
                 self.queue_manager.remove_target(target_name)
                 self.refresh_queue_ui()
                 self.tray_icon.showMessage("NebulaPilot", f"Launched PI for {target_name}", QSystemTrayIcon.Information)
         except Exception as e:
              self.tray_icon.showMessage("Error", f"Failed to launch PI: {e}", QSystemTrayIcon.Critical)
+             self.is_processing = False # Reset on error
              
-        # Reset processing flag after launch (since PI is external)
-        # Ideally we'd monitor the process, but `subprocess.Popen` returns immediately.
-        # So we just say "We launched it". The user can stop us if they want.
-        # But wait, if we reset fast, the scheduler might pick the NEXT one immediately if time remains!
-        # This is dangerous. 
-        # FIX: We should probably require manual "I'm done" or assume a long timeout.
-        # Given the "2 hours" constraint, we should probably set a timer or waiting state.
-        # For now, I'll set a logical "Busy" state for 5 minutes to prevent rapid fire? 
-        # Or just let it go. One PI instance is usually enough.
-        # I'll rely on the user to keep the queue clean for now.
-        self.is_processing = False # Reset immediately to allow scheduler to check again (but maybe queue is empty now)
+        # Do NOT reset is_processing here. It is reset in check_schedule when process finishes.
     
     def run_auto_organize(self):
         source_dir = self.settings.value("last_source_dir", "")
