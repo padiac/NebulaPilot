@@ -462,11 +462,15 @@ class NebulaLauncher:
             # Configure Gaia DR3 database path (USER PROVIDED)
             gaia_path = r"D:/Program Files/PixInsight/library/gaia"
             f.write(f'// Configure Gaia DR3 Database Path\n')
-            f.write(f'if (File.directoryExists("{gaia_path}")) {{\n')
-            f.write(f'   Settings.write("StarCatalogs/Gaia/DR3/DatabaseFilePaths", ["{gaia_path}"]);\n')
-            f.write(f'   console.writeln("nebulaPilot: Configured Gaia DR3 path: {gaia_path}");\n')
-            f.write(f'}} else {{\n')
-            f.write(f'   console.warningln("nebulaPilot: Gaia path not found: {gaia_path}");\n')
+            f.write(f'try {{\n')
+            f.write(f'   if (File.directoryExists("{gaia_path}")) {{\n')
+            f.write(f'      Settings.write("StarCatalogs/Gaia/DR3/DatabaseFilePaths", ["{gaia_path}"]);\n')
+            f.write(f'      console.writeln("nebulaPilot: Configured Gaia DR3 path: {gaia_path}");\n')
+            f.write(f'   }} else {{\n')
+            f.write(f'      console.warningln("nebulaPilot: Gaia path not found: {gaia_path}");\n')
+            f.write(f'   }}\n')
+            f.write(f'}} catch (e) {{\n')
+            f.write(f'   console.criticalln("nebulaPilot: Error setting Gaia path: " + e.message);\n')
             f.write(f'}}\n\n')
 
             f.write(f'#include "{wbpp_js}"\n')
@@ -496,18 +500,18 @@ class NebulaLauncher:
         if not Path(self.pi_path).exists():
             self.log(f"ERROR: PI not found at {self.pi_path}")
             print(f"Error: PixInsight not found at {self.pi_path}")
-            return False, []
+            return False, [], None
 
         try:
             proc = subprocess.Popen(cmd_str, shell=True)
             self.log(f"Popen started, PID: {proc.pid}")
-            return proc, [test_file, runner_file]
+            return proc, [test_file, runner_file], pi_out
         except Exception as e:
             self.log(f"ERROR: {e}")
             import traceback
             self.log(traceback.format_exc())
             print(f"Error launching PixInsight: {e}")
-            return False, []
+            return False, [], None
 
     # Backwards-compatible alias
     def generate_script(self, target_name, file_groups, calibration_files={}, output_base_dir=None):
@@ -521,17 +525,23 @@ class NebulaLauncher:
         if not light_groups:
             self.log(f"No light frames found for {target_name}")
             print(f"No light frames found for {target_name}")
-            return False, []
+            return False, [], None
 
         total_files = sum(len(v) for v in light_groups.values())
         self.log(f"Found {total_files} light frames for {target_name}")
         print(f"Found {total_files} light frames for {target_name}")
 
-        if source_dir:
+        # Determine output base based on actual file location to prevent duplicate folders
+        # We prioritize the file's current path over the GUI's 'source_dir' setting
+        if light_groups:
+            first_files = list(light_groups.values())[0]
+            # Assumes structure: Root/Target/Filter/File.fits
+            # .parent = Filter folder, .parent.parent = Target folder
+            output_base = Path(first_files[0]).parent.parent
+        elif source_dir:
             output_base = Path(source_dir) / target_name
         else:
-            first_filter_files = list(light_groups.values())[0]
-            output_base = Path(first_filter_files[0]).parent.parent
+            output_base = Path.cwd() / target_name
 
         return self.generate_and_run(
             target_name, light_groups, calibration_files, output_base

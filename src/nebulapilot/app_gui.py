@@ -431,11 +431,10 @@ class NebulaPilotGUI(QMainWindow):
         super().__init__()
         self.queue_manager = QueueManager()
         self.launcher = NebulaLauncher()
-        self.queue_manager = QueueManager()
-        self.launcher = NebulaLauncher()
         self.is_processing = False
         self.current_process = None # Track subprocess
         self.current_temp_files = [] # Track files to cleanup
+        self.current_output_dir = None # Track output for log monitoring
         self.current_target_name = None # Track name of running target
         self.force_quit = False # Flag to distinguish between minimize (X) and quit
         
@@ -732,6 +731,48 @@ class NebulaPilotGUI(QMainWindow):
         if self.is_processing:
             if self.current_process:
                 ret = self.current_process.poll()
+                
+                # Check log for completion if still running
+                if ret is None and self.current_output_dir:
+                    try:
+                        logs_dir = self.current_output_dir / "logs"
+                        if logs_dir.exists():
+                            # Find latest .log file (WBPP logs are usually dated)
+                            log_files = sorted(logs_dir.glob("*.log"), key=os.path.getmtime, reverse=True)
+                            if log_files:
+                                latest_log = log_files[0]
+                                with open(latest_log, "r", encoding="utf-8", errors="ignore") as f:
+                                    # Read last 4KB to find completion message
+                                    try:
+                                        f.seek(0, 2) # Seek to end
+                                        size = f.tell()
+                                        f.seek(max(0, size - 4096), 0) # Go back 4KB
+                                        content = f.read()
+                                    except:
+                                        f.seek(0)
+                                        content = f.read() # Fallback for small files
+
+                                    # Check for various completion signatures
+                                    # "Execution finished" / "Global process: Done" -> Standard PI
+                                    # "* WeightedBatchPreprocessing:" -> WBPP execution time summary at end
+                                    # "Autocrop completed:" -> WBPP Autocrop end
+                                    completion_markers = [
+                                        "Execution finished", 
+                                        "Global process: Done", 
+                                        "* WeightedBatchPreprocessing:",
+                                        "Autocrop completed:"
+                                    ]
+                                    
+                                    if any(marker in content for marker in completion_markers):
+                                        print(f"Detected completion in log: {latest_log.name}. Terminating PI...")
+                                        self.current_process.kill()
+                                        try:
+                                            ret = self.current_process.wait(timeout=5)
+                                        except:
+                                            pass # Ignore wait timeout
+                    except Exception as e:
+                        print(f"Log monitoring error: {e}")
+
                 if ret is None:
                     # Still running
                     self.processor_status.setText(f"Processor: Running {self.current_target_name or 'Task'}... (PID: {self.current_process.pid})")
@@ -756,6 +797,7 @@ class NebulaPilotGUI(QMainWindow):
                     self.is_processing = False
                     self.current_process = None
                     self.current_target_name = None
+                    self.current_output_dir = None
                     # Fall through to pick next task immediately?
             else:
                 # Flag says processing but no process tracking? Maybe lingering state. Reset.
@@ -879,10 +921,11 @@ class NebulaPilotGUI(QMainWindow):
             self.launcher.pi_path = pi_path 
             self.launcher.log(f"App requesting launch for {target_name} with PI Path: {pi_path}")
             
-            proc, temp_files = self.launcher.run_target(target_name, dest_dir, cal_files)
+            proc, temp_files, output_dir = self.launcher.run_target(target_name, dest_dir, cal_files)
             if proc:
                 self.current_process = proc
                 self.current_temp_files = temp_files
+                self.current_output_dir = output_dir
                 self.current_target_name = target_name
                 # Remove from Queue immediately so it isn't picked again
                 self.queue_manager.remove_target(target_name)

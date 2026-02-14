@@ -105,6 +105,21 @@ def organize_directory(source_dir, dest_dir, dry_run=False):
                 
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
+    
+    # Clean up empty source directories after moving files
+    if not dry_run:
+        print("Cleaning up empty source directories...")
+        for root, dirs, files in os.walk(source_dir, topdown=False):
+            for name in dirs:
+                dir_to_check = Path(root) / name
+                try:
+                    # Check if directory is empty (no files or subdirs)
+                    # iterdir() might raise if permission denied, hence try/except
+                    if not any(dir_to_check.iterdir()):
+                        dir_to_check.rmdir()
+                        print(f"Removed empty directory: {dir_to_check}")
+                except Exception as e:
+                    pass # Ignore errors (e.g. non-empty, permission)
 
 if __name__ == "__main__":
     import sys
