@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTableWidget, QTableWidgetItem, QPushButton, QProgressBar, 
     QLabel, QFileDialog, QHeaderView, QLineEdit, QDialog, QFormLayout,
-    QFrame, QCheckBox, QSystemTrayIcon, QMenu, QStyle
+    QFrame, QCheckBox, QSystemTrayIcon, QMenu, QStyle, QTimeEdit
 )
 from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate, QMimeData
 from PySide6.QtGui import QIcon, QColor, QAction, QDrag
@@ -292,6 +292,139 @@ class QueueListWidget(QListWidget):
         else:
             event.ignore()
 
+class SchedulerSettingsDialog(QDialog):
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Integration Schedule & Settings")
+        self.setFixedWidth(450)
+        self.layout = QFormLayout(self)
+        
+        # --- PI Executable Path ---
+        pi_path = self.settings.value("pi_executable_path", r"C:\Program Files\PixInsight\bin\PixInsight.exe")
+        self.pi_path_edit = QLineEdit(pi_path)
+        self.pi_browse_btn = QPushButton("...")
+        self.pi_browse_btn.setFixedWidth(30)
+        self.pi_browse_btn.clicked.connect(self.browse_pi_path)
+        
+        pi_layout = QHBoxLayout()
+        pi_layout.addWidget(self.pi_path_edit)
+        pi_layout.addWidget(self.pi_browse_btn)
+        
+        self.layout.addRow("PixInsight.exe:", pi_layout)
+        
+        self.layout.addRow(QLabel("<hr>"))
+
+        
+        # Defaults
+        # Morning: 09:00 - 12:00
+        # Afternoon: 13:00 - 18:00
+        
+        m_start = self.settings.value("sched_m_start", QTime(9, 0))
+        m_end = self.settings.value("sched_m_end", QTime(12, 0))
+        a_start = self.settings.value("sched_a_start", QTime(13, 0))
+        a_end = self.settings.value("sched_a_end", QTime(18, 0))
+        
+        # Ensure types (QSettings might return strings or user might have messed with ini)
+        if not isinstance(m_start, QTime): m_start = QTime.fromString(m_start) if isinstance(m_start, str) else QTime(9, 0)
+        if not isinstance(m_end, QTime): m_end = QTime.fromString(m_end) if isinstance(m_end, str) else QTime(12, 0)
+        if not isinstance(a_start, QTime): a_start = QTime.fromString(a_start) if isinstance(a_start, str) else QTime(13, 0)
+        if not isinstance(a_end, QTime): a_end = QTime.fromString(a_end) if isinstance(a_end, str) else QTime(18, 0)
+
+        self.m_start_edit = QTimeEdit(m_start)
+        self.m_end_edit = QTimeEdit(m_end)
+        self.a_start_edit = QTimeEdit(a_start)
+        self.a_end_edit = QTimeEdit(a_end)
+        
+        self.weekdays_cb = QCheckBox("Run on Weekdays Only (Skip Sat/Sun)")
+        self.weekdays_cb.setChecked(self.settings.value("sched_weekdays_only", False, type=bool))
+        
+        for te in [self.m_start_edit, self.m_end_edit, self.a_start_edit, self.a_end_edit]:
+            te.setDisplayFormat("HH:mm")
+        
+        self.layout.addRow(QLabel("<b>Morning Window</b>"))
+        self.layout.addRow("Start:", self.m_start_edit)
+        self.layout.addRow("End:", self.m_end_edit)
+        
+        self.layout.addRow(QLabel("<b>Afternoon Window</b>"))
+        self.layout.addRow("Start:", self.a_start_edit)
+        self.layout.addRow("End:", self.a_end_edit)
+        
+        self.layout.addRow(self.weekdays_cb)
+        
+        self.save_btn = QPushButton("Save Schedule")
+
+        self.save_btn.clicked.connect(self.accept)
+        self.layout.addRow(self.save_btn)
+        
+    def browse_pi_path(self):
+        fname, _ = QFileDialog.getOpenFileName(self, "Select PixInsight Executable", "", "Executables (*.exe)")
+        if fname:
+            self.pi_path_edit.setText(fname)
+
+    def save_settings(self):
+        self.settings.setValue("pi_executable_path", self.pi_path_edit.text())
+        self.settings.setValue("sched_m_start", self.m_start_edit.time())
+        self.settings.setValue("sched_m_end", self.m_end_edit.time())
+        self.settings.setValue("sched_a_start", self.a_start_edit.time())
+        self.settings.setValue("sched_a_end", self.a_end_edit.time())
+        self.settings.setValue("sched_weekdays_only", self.weekdays_cb.isChecked())
+
+
+
+class CalibrationDialog(QDialog):
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Master Calibration Files")
+        self.setFixedWidth(500)
+        self.layout = QFormLayout(self)
+        
+        self.paths = {}
+        
+        # Bias
+        self.add_file_row("Master Bias:", "cal_bias")
+        # Dark
+        self.add_file_row("Master Dark:", "cal_dark")
+        
+        self.layout.addRow(QLabel("<b>Master Flats</b>"))
+        self.add_file_row("L Flat:", "cal_flat_l")
+        self.add_file_row("R Flat:", "cal_flat_r")
+        self.add_file_row("G Flat:", "cal_flat_g")
+        self.add_file_row("B Flat:", "cal_flat_b")
+        self.add_file_row("S Flat:", "cal_flat_s")
+        self.add_file_row("H Flat:", "cal_flat_h")
+        self.add_file_row("O Flat:", "cal_flat_o")
+        
+        self.save_btn = QPushButton("Save Paths")
+        self.save_btn.clicked.connect(self.accept)
+        self.layout.addRow(self.save_btn)
+        
+    def add_file_row(self, label, key):
+        path = self.settings.value(key, "")
+        edit = QLineEdit(path)
+        btn = QPushButton("...")
+        btn.setFixedWidth(30)
+        btn.clicked.connect(lambda: self.browse_file(edit))
+        
+        row_layout = QHBoxLayout()
+        row_layout.addWidget(edit)
+        row_layout.addWidget(btn)
+        
+        self.layout.addRow(label, row_layout)
+        self.paths[key] = edit
+        
+    def browse_file(self, edit):
+        fname, _ = QFileDialog.getOpenFileName(self, "Select Master File", "", "Images (*.xisf *.fit *.fits)")
+        if fname:
+            edit.setText(fname)
+            
+    def save_settings(self):
+        for key, edit in self.paths.items():
+            self.settings.setValue(key, edit.text())
+
+
+
 class NebulaPilotGUI(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -339,7 +472,7 @@ class NebulaPilotGUI(QMainWindow):
         self.queue_label.setStyleSheet("font-weight: bold; font-size: 16px; color: #e0e0e0;")
         self.right_layout.addWidget(self.queue_label)
         
-        self.right_layout.addWidget(self.queue_label)
+
         
         self.queue_list = QueueListWidget(self) # Pass self as main_window
         self.refresh_queue_ui() # Load initial queue
@@ -349,6 +482,22 @@ class NebulaPilotGUI(QMainWindow):
         self.processor_status = QLabel("Processor: Idle")
         self.processor_status.setStyleSheet("color: #aaaaaa; font-style: italic;")
         self.right_layout.addWidget(self.processor_status)
+
+        # --- Queue Controls (Schedule & Calibration) ---
+        self.queue_controls_layout = QHBoxLayout()
+        self.queue_controls_layout.setSpacing(10)
+        
+        self.schedule_btn = QPushButton("Schedule")
+        self.schedule_btn.setCursor(Qt.PointingHandCursor)
+        self.schedule_btn.clicked.connect(self.open_scheduler_settings)
+        self.queue_controls_layout.addWidget(self.schedule_btn)
+
+        self.cal_btn = QPushButton("Calibration")
+        self.cal_btn.setCursor(Qt.PointingHandCursor)
+        self.cal_btn.clicked.connect(self.open_calibration_settings)
+        self.queue_controls_layout.addWidget(self.cal_btn)
+        
+        self.right_layout.addLayout(self.queue_controls_layout)
         
         self.main_layout.addWidget(self.right_panel, stretch=1) # 25% width
         
@@ -386,6 +535,8 @@ class NebulaPilotGUI(QMainWindow):
         self.organize_btn.setIcon(QIcon.fromTheme("folder-move"))
         self.organize_btn.clicked.connect(self.on_organize_clicked)
         self.header_layout.addWidget(self.organize_btn)
+
+
         
         # Vertical separator
         separator = QFrame()
@@ -542,21 +693,19 @@ class NebulaPilotGUI(QMainWindow):
 
     def check_schedule(self):
         """Called every minute to check if we should run."""
-        if not self.auto_cb.isChecked():
-            return
-
         now = datetime.now()
         current_time = now.strftime("%H:%M")
         today_str = now.strftime("%Y-%m-%d")
 
-        # Scheduler Trigger: 06:00 (Auto-Organize)
-        if current_time == "06:00":
-            if self.last_run_date != today_str:
-                print("Triggering Auto-Schedule...")
-                self.run_auto_organize()
-                self.last_run_date = today_str # Prevent re-run same day
+        # Scheduler Trigger: 06:00 (Auto-Organize) — only if checkbox enabled
+        if self.auto_cb.isChecked():
+            if current_time == "06:00":
+                if self.last_run_date != today_str:
+                    print("Triggering Auto-Schedule...")
+                    self.run_auto_organize()
+                    self.last_run_date = today_str # Prevent re-run same day
 
-        # Integration Scheduler Logic
+        # Integration Scheduler Logic (always active)
         # Windows: 09:00-12:00, 13:00-18:00
         # Check every tick
         if self.is_processing:
@@ -566,35 +715,57 @@ class NebulaPilotGUI(QMainWindow):
         current_hour = now.hour
         current_minute = now.minute
         
+        # Check Weekend Filter
+        weekdays_only = self.settings.value("sched_weekdays_only", False, type=bool)
+        if weekdays_only and now.weekday() >= 5: # 5=Sat, 6=Sun
+             self.processor_status.setText("Processor: Idle (Weekend)")
+             return
+
         # Calculate Time Remaining in Window
         time_remaining_hours = 0
         window_active = False
 
-        # Morning Window: 09:00 to 12:00
-        if 9 <= current_hour < 12:
-            window_active = True
-            time_remaining_hours = 12 - (current_hour + current_minute/60.0)
+        # Load Schedule (Defaults if not set)
+
+        m_start = self.settings.value("sched_m_start", QTime(9, 0))
+        m_end = self.settings.value("sched_m_end", QTime(12, 0))
+        a_start = self.settings.value("sched_a_start", QTime(13, 0))
+        a_end = self.settings.value("sched_a_end", QTime(18, 0))
         
-        # Afternoon Window: 13:00 to 18:00
-        elif 13 <= current_hour < 18:
+        # Ensure types
+        if not isinstance(m_start, QTime): m_start = QTime.fromString(m_start) if isinstance(m_start, str) else QTime(9, 0)
+        if not isinstance(m_end, QTime): m_end = QTime.fromString(m_end) if isinstance(m_end, str) else QTime(12, 0)
+        if not isinstance(a_start, QTime): a_start = QTime.fromString(a_start) if isinstance(a_start, str) else QTime(13, 0)
+        if not isinstance(a_end, QTime): a_end = QTime.fromString(a_end) if isinstance(a_end, str) else QTime(18, 0)
+
+        current_qtime = QTime(current_hour, current_minute)
+
+        # Morning Window
+        if m_start <= current_qtime < m_end:
             window_active = True
-            time_remaining_hours = 18 - (current_hour + current_minute/60.0)
+            # Diff in hours
+            secs_to_end = current_qtime.secsTo(m_end)
+            time_remaining_hours = secs_to_end / 3600.0
+        
+        # Afternoon Window
+        elif a_start <= current_qtime < a_end:
+            window_active = True
+            secs_to_end = current_qtime.secsTo(a_end)
+            time_remaining_hours = secs_to_end / 3600.0
         
         status_msg = f"Processor: Idle (Outside Windows)"
         if window_active:
-            status_msg = f"Processor: Active Window (Time Left: {time_remaining_hours:.1f}h)"
-            # Check if enough time (>= 2 hours)
-            if time_remaining_hours >= 2.0:
-                 # Check Queue
-                 next_target = self.queue_manager.get_next_target()
-                 if next_target:
-                     self.run_process_target(next_target)
-                 else:
-                     status_msg += " - Queue Empty"
+            # Always check Queue if window is active, regardless of duration
+            next_target = self.queue_manager.get_next_target()
+            if next_target:
+                status_msg = f"Processor: Active Window - Launching {next_target}..."
+                self.run_process_target(next_target)
             else:
-                 status_msg += " - Not enough time (<2h)"
+                status_msg = f"Processor: Active Window (Time Left: {time_remaining_hours:.1f}h) - Queue Empty"
                  
         self.processor_status.setText(status_msg)
+
+
 
     def add_to_queue_from_drop(self, target_name):
         if self.queue_manager.add_target(target_name):
@@ -635,9 +806,30 @@ class NebulaPilotGUI(QMainWindow):
         # For this prototype, we just launch and assume user manages it, OR we block?
         # User said "Auto trigger".
         
+        # Retrieve Files from DB not implemented fully yet, but logic is there
+        
+        # Collect Calibration Files
+        cal_files = {}
+        for k in ["cal_bias", "cal_dark", "cal_flat_l", "cal_flat_r", 
+                  "cal_flat_g", "cal_flat_b", "cal_flat_s", "cal_flat_h", "cal_flat_o"]:
+            path = self.settings.value(k, "")
+            if path:
+                cal_files[k] = path
+                
+        # Get PI Path from settings
+        pi_path = self.settings.value("pi_executable_path", r"C:\Program Files\PixInsight\bin\PixInsight.exe")
+        print(f"DEBUG: App using PI Path: {pi_path}") 
+        
         try:
-            success = self.launcher.run_target(target_name, dest_dir)
+            # Pass pi_path override
+            self.launcher.pi_path = pi_path 
+            self.launcher.log(f"App requesting launch for {target_name} with PI Path: {pi_path}")
+            
+            success = self.launcher.run_target(target_name, dest_dir, cal_files)
             if success:
+
+
+
                 # Remove from Queue immediately so it doesn't loop forever?
                 # Or move to end?
                 self.queue_manager.remove_target(target_name)
@@ -675,6 +867,18 @@ class NebulaPilotGUI(QMainWindow):
             self.tray_icon.showMessage("NebulaPilot", "Organization Complete! Database Updated.", QSystemTrayIcon.Information)
         except Exception as e:
             self.tray_icon.showMessage("Error", f"Organization failed: {str(e)}", QSystemTrayIcon.Critical)
+
+    def open_scheduler_settings(self):
+        dlg = SchedulerSettingsDialog(self.settings, self)
+        if dlg.exec():
+            dlg.save_settings()
+            self.check_schedule() # Re-check immediately
+
+    def open_calibration_settings(self):
+        dlg = CalibrationDialog(self.settings, self)
+        if dlg.exec():
+            dlg.save_settings()
+
 
     
     def refresh_table(self):
