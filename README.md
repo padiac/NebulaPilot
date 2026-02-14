@@ -60,6 +60,26 @@ python batch_header_fixer.py
 
 ---
 
+## ✨ Automated PixInsight Processing
+
+NebulaPilot now supports fully automated Weighted Batch Preprocessing (WBPP) integration:
+
+- **Seamless Launch**: Automatically generates configuration scripts and launches PixInsight.
+- **Smart Monitoring**: Detects when WBPP finishes processing (via log monitoring) and automatically closes PixInsight.
+  - Supports detection of both standard completion and WBPP-specific end states (like Autocrop completion).
+- **Auto Cleanup**: 
+  - Removes temporary `.wbpptest` and runner scripts after execution.
+  - **Organize Files** feature now automatically deletes empty source directories after moving files.
+- **Robust Path Handling**: 
+  - Automatically configures **Gaia DR3** database paths to ensure successful plate solving.
+  - Output files are intelligently stored alongside the source data (e.g., `Target_Name/PixInsight`), preventing the creation of duplicate folders with mismatched names.
+
+**Requirements for Automation:**
+- **PixInsight 1.8.9+** installed.
+- **Gaia DR3** database files. The system attempts to auto-configure the path (default: `D:/Program Files/PixInsight/library/gaia`).
+
+---
+
 ## 📦 Packaging (Windows .exe)
 
 To package the project into a standalone Windows software:
