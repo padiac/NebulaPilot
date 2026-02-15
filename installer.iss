@@ -24,6 +24,8 @@ OutputBaseFilename=nebulaPilot-{#MyAppVersion}-Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=assets\icon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -32,7 +34,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\nebulaPilot\*"; DestDir: "{app}"; Flags: igonereversion subdirs createallsubdirs
+Source: "dist\nebulaPilot\*"; DestDir: "{app}"; Flags: ignoreversion subdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

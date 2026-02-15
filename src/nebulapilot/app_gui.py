@@ -594,7 +594,16 @@ class NebulaPilotGUI(QMainWindow):
         
         # --- System Tray Setup ---
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon)) 
+        
+        # Resolve Icon Path
+        icon_path = self.get_icon_path()
+        if os.path.exists(icon_path):
+            app_icon = QIcon(icon_path)
+            self.setWindowIcon(app_icon)
+            self.tray_icon.setIcon(app_icon)
+        else:
+            print(f"Warning: Icon not found at {icon_path}")
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon)) 
         
         tray_menu = QMenu()
         
@@ -626,6 +635,20 @@ class NebulaPilotGUI(QMainWindow):
         QTimer.singleShot(1000, self.check_schedule)
 
         self.refresh_table()
+
+    def get_icon_path(self):
+        """Resolves absolute path to icon.ico handling dev/frozen environments."""
+        if getattr(sys, 'frozen', False):
+            # If frozen, we look for the bundled assets
+            # In one-dir mode, __file__ is inside _internal/nebulapilot/app_gui.pyc
+            # So _internal is dirname(dirname(__file__))
+            base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            return os.path.join(base_path, "assets", "icon.ico")
+        else:
+            # If running from source, __file__ is src/nebulapilot/app_gui.py
+            # Go up 3 levels to reach root: src/nebulapilot -> src -> root
+            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            return os.path.join(base_path, "assets", "icon.ico")
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
