@@ -6,6 +6,25 @@ from datetime import datetime
 from astropy.io import fits
 from .scanner import get_fits_metadata
 
+import re
+
+def get_path_from_date_folder(file_path):
+    """
+    Try to find a date-like folder in the path and return the relative path starting from there.
+    Supports YYYY-MM-DD, YYYYMMDD, YYYY_MM_DD.
+    """
+    parts = list(file_path.parts)
+    # Regex for YYYY-MM-DD, YYYYMMDD, YYYY_MM_DD (simple validation)
+    # Matches years 20xx or 19xx
+    date_pattern = re.compile(r'^(19|20)\d{2}[-_\.]?(0[1-9]|1[0-2])[-_\.]?(0[1-9]|[12]\d|3[01])$')
+    
+    for i, part in enumerate(parts):
+        if date_pattern.match(part):
+            # Found the date folder. Return path starting from this part.
+            return Path(*parts[i:])
+            
+    return None
+
 def is_frame_good(header):
     """
     Check if a frame is good enough to be kept.
@@ -19,30 +38,26 @@ def is_frame_good(header):
 def get_organize_path(metadata, dest_root, source_root, is_good):
     """
     Determine the destination path for a file based on its metadata.
-    Mirrors the source directory structure under the target folder.
+    Preserves directory structure starting from the Date folder downwards.
     """
     file_path = Path(metadata["path"])
     
-    if not is_good:
-        # Failed frames go to simplified structure or mirror structure in a failed folder
-        # For consistency, let's keep failed logic simple or mirror it too?
-        # Let's mirror it under 'failed'
+    # Determine the structural part of the path we want to keep
+    # Strategy: "Date Downwards"
+    rel_path = get_path_from_date_folder(file_path)
+    
+    if rel_path is None:
+        # Fallback: If no date folder found, try relative to source_root, else just filename
         try:
             rel_path = file_path.relative_to(source_root)
         except ValueError:
-            # Fallback if not relative (shouldn't happen if organized correct)
-            rel_path = file_path.name
+            rel_path = Path(file_path.name)
             
+    if not is_good:
         return Path(dest_root) / "failed" / rel_path
     
     # Good frames: Target / RelPath
     target_name = metadata.get("target_name", "Unknown").replace(" ", "_").replace("/", "-")
-    
-    try:
-        rel_path = file_path.relative_to(source_root)
-    except ValueError:
-         # Fallback
-        rel_path = file_path.name
     
     return Path(dest_root) / target_name / rel_path
 
