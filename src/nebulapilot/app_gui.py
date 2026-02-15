@@ -5,17 +5,176 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTableWidget, QTableWidgetItem, QPushButton, QProgressBar, 
     QLabel, QFileDialog, QHeaderView, QLineEdit, QDialog, QFormLayout,
-    QFrame, QCheckBox, QSystemTrayIcon, QMenu, QStyle, QTimeEdit
+    QFrame, QCheckBox, QSystemTrayIcon, QMenu, QStyle, QTimeEdit,
+    QProgressDialog
 )
-from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate, QMimeData
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate, QMimeData, QThread, Signal
 from PySide6.QtGui import QIcon, QColor, QAction, QDrag
 from .db import init_db, get_targets, update_target_goals, get_target_progress, delete_target, clear_all_data
-from .scanner import scan_directory
-from .organizer import organize_directory
 from .organizer import organize_directory
 from .queue_manager import QueueManager
 from .launcher import NebulaLauncher
-from PySide6.QtWidgets import QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QTableWidget, QTableWidgetItem, QPushButton, QProgressBar, 
+    QLabel, QFileDialog, QHeaderView, QLineEdit, QDialog, QFormLayout,
+    QFrame, QCheckBox, QSystemTrayIcon, QMenu, QStyle, QTimeEdit,
+    QProgressDialog, QScrollArea, QGroupBox, QMessageBox, QListWidget, 
+    QListWidgetItem, QAbstractItemView
+)
+
+class OrganizationProgressDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("NebulaPilot Organizer")
+        self.resize(500, 600)
+        self.setWindowModality(Qt.WindowModal)
+        
+        self.layout = QVBoxLayout(self)
+        
+        # Total Progress
+        self.total_label = QLabel("Initializing scan...")
+        self.total_label.setStyleSheet("font-weight: bold; color: #ffffff; font-size: 16px; margin-bottom: 5px;")
+        self.layout.addWidget(self.total_label)
+        
+        self.total_bar = QProgressBar()
+        self.total_bar.setRange(0, 100)
+        self.layout.addWidget(self.total_bar)
+        
+        # Details Area (Scrollable)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll_content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll.setWidget(self.scroll_content)
+        
+        self.layout.addWidget(self.scroll)
+        
+        # Cancel Button
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.layout.addWidget(self.cancel_btn)
+        
+        # Store progress bars: self.bars[target][filter] = QProgressBar
+        self.bars = {}
+        
+    def init_structure(self, structure):
+        """
+        structure = {
+            'TargetName': {
+                'FilterName': total_count
+            }
+        }
+        """
+        self.total_label.setText("Processing files...")
+        
+        # Clear existing
+        for i in reversed(range(self.scroll_layout.count())): 
+            self.scroll_layout.itemAt(i).widget().setParent(None)
+            
+        self.bars = {}
+        
+        for target, filters in structure.items():
+            group = QGroupBox(target)
+            group_layout = QVBoxLayout(group)
+            # Make GroupBox Title Bold and White
+            group.setStyleSheet("""
+                QGroupBox { 
+                    font-weight: bold; 
+                    font-size: 14px;
+                    border: 1px solid #555; 
+                    margin-top: 15px; 
+                    padding-top: 10px;
+                    color: #ffffff;
+                } 
+                QGroupBox::title { 
+                    subcontrol-origin: margin; 
+                    left: 10px; 
+                    padding: 0 5px; 
+                    color: #4da6ff; /* Light blue for target names */
+                }
+            """)
+            
+            self.bars[target] = {}
+            
+            for filter_name, count in filters.items():
+                # HBox for Label + Bar
+                hbox = QHBoxLayout()
+                
+                label = QLabel(f"{filter_name}:")
+                label.setFixedWidth(50)
+                label.setStyleSheet("color: #e0e0e0; font-weight: bold;") # Bright grey labels
+                
+                bar = QProgressBar()
+                bar.setRange(0, count)
+                bar.setValue(0)
+                bar.setFormat(f"%v / {count}")
+                # Color code
+                color = "#cccccc"
+                if filter_name == 'R': color = "#e57373"
+                elif filter_name == 'G': color = "#81c784"
+                elif filter_name == 'B': color = "#64b5f6"
+                elif filter_name == 'S': color = "#a52a2a"
+                elif filter_name == 'H': color = "#d32f2f"
+                elif filter_name == 'O': color = "#00bcd4"
+                
+                bar.setStyleSheet(f"QProgressBar::chunk {{ background-color: {color}; }}")
+                
+                hbox.addWidget(label)
+                hbox.addWidget(bar)
+                
+                group_layout.addLayout(hbox)
+                
+                self.bars[target][filter_name] = bar
+                
+            self.scroll_layout.addWidget(group)
+            
+        self.scroll_layout.addStretch()
+        
+    def update_channel_progress(self, target, filter_name, current_val):
+        if target in self.bars and filter_name in self.bars[target]:
+            self.bars[target][filter_name].setValue(current_val)
+
+class OrganizerWorker(QThread):
+    progress_signal = Signal(int, str)
+    # New Signals
+    init_structure_signal = Signal(dict) # {target: {filter: count}}
+    channel_progress_signal = Signal(str, str, int) # target, filter, current_count
+    
+    finished_signal = Signal(bool, str, dict) 
+
+    def __init__(self, source_dir, dest_dir):
+        super().__init__()
+        self.source_dir = source_dir
+        self.dest_dir = dest_dir
+
+    def run(self):
+        try:
+            # Main Progress (Total)
+            def callback(percent, message):
+                self.progress_signal.emit(percent, message)
+            
+            # Structure Init
+            def structure_cb(structure):
+                self.init_structure_signal.emit(structure)
+                
+            # Channel Progress
+            def channel_cb(target, filter_name, count):
+                self.channel_progress_signal.emit(target, filter_name, count)
+
+            stats = organize_directory(
+                self.source_dir, 
+                self.dest_dir, 
+                progress_callback=callback,
+                structure_callback=structure_cb,
+                channel_callback=channel_cb
+            )
+            
+            if stats is None:
+                 stats = {}
+            self.finished_signal.emit(True, "Organization Complete", stats)
+        except Exception as e:
+            self.finished_signal.emit(False, str(e), {})
 
 # Dark Theme Stylesheet
 DARK_THEME = """
@@ -636,6 +795,13 @@ class NebulaPilotGUI(QMainWindow):
 
         self.refresh_table()
 
+        # --- Auto-Run Organizer on Startup ---
+        # Trigger after 2 seconds to allow UI to show up
+        # Only if directories are configured
+        if self.auto_cb.isChecked():
+            # Run manually on startup to show the progress UI for verification
+            QTimer.singleShot(5000, lambda: self.run_auto_organize(manual=True))
+
     def get_icon_path(self):
         """Resolves absolute path to icon.ico handling dev/frozen environments."""
         if getattr(sys, 'frozen', False):
@@ -960,23 +1126,87 @@ class NebulaPilotGUI(QMainWindow):
              
         # Do NOT reset is_processing here. It is reset in check_schedule when process finishes.
     
-    def run_auto_organize(self):
+    # --- Organization Signals & Methods ---
+    def run_auto_organize(self, manual=False):
         source_dir = self.settings.value("last_source_dir", "")
         dest_dir = self.settings.value("last_dest_dir", "")
         
+        print(f"DEBUG: run_auto_organize called. manual={manual}")
+        print(f"DEBUG: Source: {source_dir}")
+        print(f"DEBUG: Dest: {dest_dir}")
+
         if not source_dir or not dest_dir:
-            self.tray_icon.showMessage("Auto-Organize Failed", "Source or Destination directory not set.", QSystemTrayIcon.Warning)
+            print("DEBUG: Auto-Organize skipped - paths not configured.")
             return
             
-        self.tray_icon.showMessage("NebulaPilot", "Auto-Organizing files...", QSystemTrayIcon.Information)
+        self.is_manual_organize = manual # Store for callback
         
-        # Run organization
-        try:
-            organize_directory(source_dir, dest_dir)
+        if manual:
+            # Use Custom Dialog
+            self.progress_dialog = OrganizationProgressDialog(self)
+            self.progress_dialog.show()
+            # Connect cancel signal
+            self.progress_dialog.cancel_btn.clicked.connect(self.cancel_organize)
+        else:
+            self.progress_dialog = None
+
+        self.organizer_worker = OrganizerWorker(source_dir, dest_dir)
+        self.organizer_worker.progress_signal.connect(self.update_organize_progress)
+        
+        if self.progress_dialog:
+            self.organizer_worker.init_structure_signal.connect(self.progress_dialog.init_structure)
+            self.organizer_worker.channel_progress_signal.connect(self.progress_dialog.update_channel_progress)
+            
+        self.organizer_worker.finished_signal.connect(self.on_organize_finished)
+        self.organizer_worker.start()
+
+    def cancel_organize(self):
+        if self.organizer_worker:
+            self.organizer_worker.terminate()
+            self.organizer_worker = None
+            if self.progress_dialog:
+                self.progress_dialog.close()
+
+    def update_organize_progress(self, percent, message):
+        if self.progress_dialog:
+            self.progress_dialog.total_bar.setValue(percent)
+            self.progress_dialog.total_label.setText(message)
+    
+    def on_organize_finished(self, success, message, stats=None):
+        if self.progress_dialog:
+            self.progress_dialog.total_bar.setValue(100)
+            self.progress_dialog.close()
+            self.progress_dialog = None
+            
+        if success:
             self.refresh_table()
-            self.tray_icon.showMessage("NebulaPilot", "Organization Complete! Database Updated.", QSystemTrayIcon.Information)
-        except Exception as e:
-            self.tray_icon.showMessage("Error", f"Organization failed: {str(e)}", QSystemTrayIcon.Critical)
+            if stats is None: stats = {}
+            
+            success_count = stats.get("success_count", 0)
+            failed_count = stats.get("failed_count", 0)
+            total_processed = success_count + failed_count
+            
+            if not getattr(self, "is_manual_organize", True) and total_processed == 0:
+                print("Auto-Organize finished with no files. Silent mode.")
+                return
+
+            report = (f"Organization Complete.\n\n"
+                      f"Accepted: {success_count}\n"
+                      f"Rejected: {failed_count}\n\n")
+            
+            reasons = stats.get("reasons", {})
+            if reasons:
+                report += "Rejection Reasons:\n"
+                for reason, count in reasons.items():
+                    report += f"- {reason}: {count}\n"
+            
+            QMessageBox.information(self, "Organization Report", report)
+        else:
+            print(f"ERROR: Organization failed: {message}")
+            if getattr(self, "is_manual_organize", True):
+                QMessageBox.critical(self, "Organization Failed", message)
+            
+        self.organizer_worker = None
 
     def open_scheduler_settings(self):
         dlg = SchedulerSettingsDialog(self.settings, self)
@@ -1273,9 +1503,8 @@ class NebulaPilotGUI(QMainWindow):
         )
 
         if confirm == QMessageBox.Yes:
-            organize_directory(source_dir, dest_dir)
-            self.refresh_table()
-            QMessageBox.information(self, "Success", "File organization complete! Database updated.")
+            # Use the new worker logic for manual organization
+            self.run_auto_organize(manual=True)
 
 def main():
     app = QApplication(sys.argv)
