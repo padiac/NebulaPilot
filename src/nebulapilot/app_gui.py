@@ -103,20 +103,22 @@ class OrganizationProgressDialog(QDialog):
                 
                 label = QLabel(f"{filter_name}:")
                 label.setFixedWidth(50)
-                label.setStyleSheet("color: #e0e0e0; font-weight: bold;") # Bright grey labels
+                
+                # Determine Color (Match bar color)
+                color = "#ffffff"
+                if filter_name == 'R': color = "#ff5252"
+                elif filter_name == 'G': color = "#69f0ae"
+                elif filter_name == 'B': color = "#40c4ff"
+                elif filter_name == 'S': color = "#ffab40" # Sulfur (Orange-ish)
+                elif filter_name == 'H': color = "#ff1744" # Ha (Strong Red)
+                elif filter_name == 'O': color = "#00e5ff" # OIII (Cyan)
+                
+                label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 13px;")
                 
                 bar = QProgressBar()
                 bar.setRange(0, count)
                 bar.setValue(0)
                 bar.setFormat(f"%v / {count}")
-                # Color code
-                color = "#cccccc"
-                if filter_name == 'R': color = "#e57373"
-                elif filter_name == 'G': color = "#81c784"
-                elif filter_name == 'B': color = "#64b5f6"
-                elif filter_name == 'S': color = "#a52a2a"
-                elif filter_name == 'H': color = "#d32f2f"
-                elif filter_name == 'O': color = "#00bcd4"
                 
                 bar.setStyleSheet(f"QProgressBar::chunk {{ background-color: {color}; }}")
                 

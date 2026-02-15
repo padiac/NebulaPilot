@@ -121,9 +121,9 @@ def calculate_group_reference(records):
     if not records:
         return None
         
-    # Extract metrics lists
-    star_counts = [r["metrics"]["star_count"] for r in records if "metrics" in r]
-    fwhms = [r["metrics"]["fwhm"] for r in records if "metrics" in r and r["metrics"]["fwhm"] > 0]
+    # Extract metrics lists - ensure we only pull from records that actually have valid metrics
+    star_counts = [r["metrics"]["star_count"] for r in records if r.get("metrics") and "star_count" in r["metrics"]]
+    fwhms = [r["metrics"]["fwhm"] for r in records if r.get("metrics") and r["metrics"].get("fwhm", 0) > 0]
     
     if not star_counts:
         return None
@@ -150,8 +150,12 @@ def evaluate_relative(record, reference):
     Re-evaluate a single record against the group reference.
     Returns: (Decision String, Reason String)
     """
-    metrics = record["metrics"]
+    metrics = record.get("metrics", {})
     
+    # Safety check: if metrics are missing (e.g. analysis failed), stick with original decision
+    if not metrics or "star_count" not in metrics:
+        return record.get("initial_decision", "REJECT"), record.get("initial_reason", "Analysis failed / missing metrics")
+
     # 1. Absolute Failures (Keep these to filter out absolute garbage/clouds)
     # If star count is extremely low (< 5), it's probably just noise or clouds, regardless of reference.
     if metrics["star_count"] < 5:
@@ -170,7 +174,7 @@ def evaluate_relative(record, reference):
     # Allow 1.5x or 2.0x expansion (clouds/focus drift).
     max_fwhm_ratio = 1.6
     # Only check FWHM if we have a valid reference FWHM
-    if reference["fwhm"] > 0 and metrics["fwhm"] > (reference["fwhm"] * max_fwhm_ratio):
+    if reference["fwhm"] > 0 and metrics.get("fwhm", 0) > (reference["fwhm"] * max_fwhm_ratio):
         return "REJECT", f"FWHM {metrics['fwhm']:.2f} > {max_fwhm_ratio}x Ref ({reference['fwhm']:.2f})"
         
     return "ACCEPT", "Relative Pass"
@@ -316,7 +320,7 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
         "total_files": valid_files_count,
         "success_count": 0,
         "failed_count": 0,
-        "grouped_stats": {}
+        "reasons": {} # Track reasons for rejection
     }
 
     # --- Pass 2: Calculate Reference and Evaluate ---
@@ -407,6 +411,13 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
                 # Use shutil.move for final production (clears source)
                 shutil.move(str(source_file), str(dest_file_path))
                 print(f"Moved {source_file.name} -> {dest_file_path} [{decision}]")
+                
+                # Update Statistics
+                if is_good:
+                    stats["success_count"] += 1
+                else:
+                    stats["failed_count"] += 1
+                    stats["reasons"][reason] = stats["reasons"].get(reason, 0) + 1
                 
                 # Update DB (Only for Good files?)
                 # If we fill DB with bad files, it might mess up stats.
