@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / Packaging
+dist/
+build/
+*.spec
+*.exe
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project Specific
+*.db
+.wbpptest
+.runner.js
+*.log
+logs/
+
+# Optional: Ignore large assets or raw data if applicable
+# *.fits
+# *.xisf
