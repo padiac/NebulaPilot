@@ -149,6 +149,10 @@ class OrganizerWorker(QThread):
         super().__init__()
         self.source_dir = source_dir
         self.dest_dir = dest_dir
+        self._is_cancelled = False
+
+    def stop(self):
+        self._is_cancelled = True
 
     def run(self):
         try:
@@ -169,7 +173,8 @@ class OrganizerWorker(QThread):
                 self.dest_dir, 
                 progress_callback=callback,
                 structure_callback=structure_cb,
-                channel_callback=channel_cb
+                channel_callback=channel_cb,
+                is_cancelled=lambda: self._is_cancelled
             )
             
             if stats is None:
@@ -800,9 +805,9 @@ class NebulaPilotGUI(QMainWindow):
         # --- Auto-Run Organizer on Startup ---
         # Trigger after 2 seconds to allow UI to show up
         # Only if directories are configured
-        if self.auto_cb.isChecked():
-            # Run manually on startup to show the progress UI for verification
-            QTimer.singleShot(5000, lambda: self.run_auto_organize(manual=True))
+        # [REMOVED] Auto-run on startup to avoid intrusive scans.
+        # if self.auto_cb.isChecked():
+        #     QTimer.singleShot(5000, lambda: self.run_auto_organize(manual=True))
 
     def get_icon_path(self):
         """Resolves absolute path to icon.ico handling dev/frozen environments."""
@@ -1147,8 +1152,8 @@ class NebulaPilotGUI(QMainWindow):
             # Use Custom Dialog
             self.progress_dialog = OrganizationProgressDialog(self)
             self.progress_dialog.show()
-            # Connect cancel signal
-            self.progress_dialog.cancel_btn.clicked.connect(self.cancel_organize)
+            # Connect cancellation logic to both Cancel button and Window Close (X)
+            self.progress_dialog.rejected.connect(self.cancel_organize)
         else:
             self.progress_dialog = None
 
@@ -1164,7 +1169,9 @@ class NebulaPilotGUI(QMainWindow):
 
     def cancel_organize(self):
         if self.organizer_worker:
-            self.organizer_worker.terminate()
+            self.organizer_worker.stop()
+            # Still call terminate as a fallback if it hangs, but stop() should handle it
+            QTimer.singleShot(1000, lambda: self.organizer_worker.terminate() if self.organizer_worker else None)
             self.organizer_worker = None
             if self.progress_dialog:
                 self.progress_dialog.close()
@@ -1188,8 +1195,19 @@ class NebulaPilotGUI(QMainWindow):
             failed_count = stats.get("failed_count", 0)
             total_processed = success_count + failed_count
             
-            if not getattr(self, "is_manual_organize", True) and total_processed == 0:
-                print("Auto-Organize finished with no files. Silent mode.")
+            if total_processed == 0:
+                # Always be silent if no files were found to organize
+                print("Organization finished with no files. Silent mode.")
+                return
+
+            if not getattr(self, "is_manual_organize", True):
+                # For automated/background runs, use a tray notification instead of a modal dialog
+                self.tray_icon.showMessage(
+                    "NebulaPilot", 
+                    f"Auto-Organization Complete: {success_count} accepted, {failed_count} rejected.",
+                    QSystemTrayIcon.Information,
+                    5000
+                )
                 return
 
             report = (f"Organization Complete.\n\n"

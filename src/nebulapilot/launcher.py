@@ -535,9 +535,20 @@ class NebulaLauncher:
         # We prioritize the file's current path over the GUI's 'source_dir' setting
         if light_groups:
             first_files = list(light_groups.values())[0]
-            # Assumes structure: Root/Target/Filter/File.fits
-            # .parent = Filter folder, .parent.parent = Target folder
-            output_base = Path(first_files[0]).parent.parent
+            first_path = Path(first_files[0])
+            # Structure: Root / Target / Date / Filter / File.fits
+            # .parent = Filter, .parent.parent = Date, .parent.parent.parent = Target
+            target_dir = first_path.parent.parent.parent
+            
+            # Heuristic: If the 3rd level up matches the target name, use it.
+            # Otherwise, fallback to the 2nd level (Target / Filter / File structure).
+            if target_dir.name.replace("_", " ").lower() == target_name.lower():
+                output_base = target_dir
+            elif first_path.parent.parent.name.replace("_", " ").lower() == target_name.lower():
+                output_base = first_path.parent.parent
+            else:
+                # Default to 3 levels up if unsure, as per user requirement for multi-date
+                output_base = target_dir
         elif source_dir:
             output_base = Path(source_dir) / target_name
         else:

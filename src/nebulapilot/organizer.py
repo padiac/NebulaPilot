@@ -179,7 +179,7 @@ def evaluate_relative(record, reference):
         
     return "ACCEPT", "Relative Pass"
 
-def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=None, structure_callback=None, channel_callback=None):
+def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=None, structure_callback=None, channel_callback=None, is_cancelled=None):
     """
     Scans source_dir for FITS files, organizes them into dest_dir/Target/Date/Filter.
     Also performs image quality analysis (Pass 1: Collect Metrics, Pass 2: Evaluate Relative).
@@ -187,6 +187,7 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
     Args:
         structure_callback (callable): func(structure_dict) - emits target/filter counts
         channel_callback (callable): func(target, filter, current_count) - updates specific bar
+        is_cancelled (callable): func() -> bool - if returns True, stop processing
     """
     total_rejected = 0 
     
@@ -199,6 +200,14 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
     print(f"Scanning {source_dir}...")
     
     analyzer = ImageQualityAnalyzer()
+    
+    # Initialize Statistics early to avoid NameError if cancelled
+    stats = {
+        "total_files": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "reasons": {}
+    }
     
     # --- Pass 0: Quick Pre-Scan (Headers only) ---
     all_files = list(source_path.rglob("*.fit*"))
@@ -224,6 +233,9 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
         if progress_callback: progress_callback(0, "Scanning headers...")
         
         for i, file_path in enumerate(all_files):
+            if is_cancelled and is_cancelled(): 
+                print("Operation cancelled during header scan.")
+                return stats
             if not file_path.is_file():
                 continue
             
@@ -278,6 +290,9 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
         total_pending = len(pending_records_for_analysis)
         
         for i, record in enumerate(pending_records_for_analysis):
+            if is_cancelled and is_cancelled():
+                print("Operation cancelled during image analysis.")
+                return stats
             file_path = record["file_path"]
             metadata = record["metadata"]
             
@@ -315,13 +330,8 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
             if channel_callback:
                 channel_callback(target, filter_name, channel_progress[key])
                 
-    # Calculate Statistics (Initialize)
-    stats = {
-        "total_files": valid_files_count,
-        "success_count": 0,
-        "failed_count": 0,
-        "reasons": {} # Track reasons for rejection
-    }
+    # Update total files count in stats
+    stats["total_files"] = valid_files_count
 
     # --- Pass 2: Calculate Reference and Evaluate ---
     
@@ -332,6 +342,9 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
     current_group_idx = 0
 
     for (target, filter_name), records in groups.items():
+        if is_cancelled and is_cancelled():
+            print("Operation cancelled during file movement.")
+            return stats
         current_group_idx += 1
         
         # Approximate progress from 50% to 90% based on groups
@@ -491,6 +504,8 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
             deleted_any = False
             # Use os.walk with topdown=False to delete children before parents
             for root, dirs, files in os.walk(source_dir, topdown=False):
+                if is_cancelled and is_cancelled():
+                    return stats
                 for name in dirs:
                     dir_to_check = Path(root) / name
                     
