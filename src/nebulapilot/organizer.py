@@ -384,6 +384,11 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
             # Destination path logic
             dest_file_path = get_organize_path(metadata, dest_dir, source_dir, is_good)
             
+            if dest_file_path.exists():
+                decision = "SKIP"
+                reason = "Target file already exists"
+                is_good = False
+            
             # 4. Prepare Log Record
             log_entry = {
                 "path": str(source_file),
@@ -420,24 +425,29 @@ def organize_directory(source_dir, dest_dir, dry_run=False, progress_callback=No
             if dry_run:
                 print(f"[DRY RUN] {decision}: {source_file.name} -> {dest_file_path} [{reason}]")
             else:
-                dest_file_path.parent.mkdir(parents=True, exist_ok=True)
-                # Use shutil.move for final production (clears source)
-                shutil.move(str(source_file), str(dest_file_path))
-                print(f"Moved {source_file.name} -> {dest_file_path} [{decision}]")
-                
-                # Update Statistics
-                if is_good:
-                    stats["success_count"] += 1
-                else:
+                if decision == "SKIP":
+                    print(f"Skipped {source_file.name} -> {dest_file_path} [{reason}]")
                     stats["failed_count"] += 1
                     stats["reasons"][reason] = stats["reasons"].get(reason, 0) + 1
-                
-                # Update DB (Only for Good files?)
-                # If we fill DB with bad files, it might mess up stats.
-                if is_good:
-                    metadata["path"] = str(dest_file_path)
-                    add_target(metadata["target_name"])
-                    add_frame(metadata)
+                else:
+                    dest_file_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Use shutil.move for final production (clears source)
+                    shutil.move(str(source_file), str(dest_file_path))
+                    print(f"Moved {source_file.name} -> {dest_file_path} [{decision}]")
+                    
+                    # Update Statistics
+                    if is_good:
+                        stats["success_count"] += 1
+                    else:
+                        stats["failed_count"] += 1
+                        stats["reasons"][reason] = stats["reasons"].get(reason, 0) + 1
+                    
+                    # Update DB (Only for Good files?)
+                    # If we fill DB with bad files, it might mess up stats.
+                    if is_good:
+                        metadata["path"] = str(dest_file_path)
+                        add_target(metadata["target_name"])
+                        add_frame(metadata)
 
     # --- Write Logs ---
     if not dry_run:
