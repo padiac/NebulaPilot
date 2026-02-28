@@ -26,6 +26,7 @@ venv.bak/
 
 # Project Specific
 *.db
+integration_queue.json
 .wbpptest
 .runner.js
 *.log
