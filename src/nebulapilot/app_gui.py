@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QTime, QDate, QMimeData
 from PySide6.QtGui import QIcon, QColor, QAction, QDrag
 from .db import init_db, get_targets, update_target_goals, get_target_progress, delete_target, clear_all_data
 from .organizer import organize_directory
+from .scanner import scan_directory
 from .queue_manager import QueueManager
 from .launcher import NebulaLauncher
 from PySide6.QtWidgets import (
