@@ -697,6 +697,12 @@ class NebulaPilotGUI(QMainWindow):
         self.show_completed_cb.setChecked(False) # Default hidden
         self.show_completed_cb.stateChanged.connect(self.refresh_table)
         self.header_layout.addWidget(self.show_completed_cb)
+
+        # Start with Windows Checkbox
+        self.startup_cb = QCheckBox("Start with Windows")
+        self.startup_cb.setChecked(self.settings.value("run_on_startup", False, type=bool))
+        self.startup_cb.stateChanged.connect(self.on_startup_cb_changed)
+        self.header_layout.addWidget(self.startup_cb)
         
         # Action Buttons
         self.scan_btn = QPushButton("Scan Directory")
@@ -905,6 +911,40 @@ class NebulaPilotGUI(QMainWindow):
              self.check_schedule()
         else:
              self.processor_status.setText("Processor: Idle (Auto-Organize Disabled)")
+
+    def on_startup_cb_changed(self, state):
+        is_checked = self.startup_cb.isChecked()
+        self.settings.setValue("run_on_startup", is_checked)
+        self.set_run_on_startup(is_checked)
+
+    def set_run_on_startup(self, enable):
+        import winreg
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "NebulaPilot"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            if enable:
+                if getattr(sys, 'frozen', False):
+                    exec_path = f'"{sys.executable}"'
+                else:
+                    # Execute this module correctly via pythonw.exe (no console window)
+                    import os
+                    script_path = os.path.abspath(__file__)
+                    
+                    python_exe = sys.executable
+                    if python_exe.lower().endswith("python.exe"):
+                        python_exe = python_exe[:-10] + "pythonw.exe"
+                        
+                    exec_path = f'"{python_exe}" "{script_path}"'
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exec_path)
+            else:
+                try:
+                    winreg.DeleteValue(key, app_name)
+                except FileNotFoundError:
+                    pass
+            winreg.CloseKey(key)
+        except Exception as e:
+            print(f"Failed to change startup settings: {e}")
 
     def check_schedule(self):
         """Called every minute to check if we should run."""
